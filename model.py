@@ -9,18 +9,19 @@ from pylie import SO3
 
 
 class RmiDataset(Dataset):
-    def __init__(self, filename, window_size=200):
+    def __init__(self, filename, window_size=200, stride = 50):
         self._file = open(filename, "r")
         self._df = pd.read_csv(filename, sep=",", header=None)
         self._window_size = window_size
+        self._stride = stride
         pass
 
     def __len__(self):
-        return floor(self._df.shape[0] / self._window_size)
+        return floor((self._df.shape[0] - self._window_size) / self._stride)
 
     def __getitem__(self, idx):
-        range_start = idx * self._window_size
-        range_stop = (idx + 1) * self._window_size
+        range_start = idx*self._stride
+        range_stop = range_start + self._window_size
 
         if range_stop > self._df.shape[0]:
             raise RuntimeError("programming error")
@@ -61,19 +62,16 @@ class RmiNet(torch.nn.Module):
     def __init__(self, window_size=200):
         super(RmiNet, self).__init__()
 
-        self.conv1 = torch.nn.Conv1d(6, 1, 5, dtype=torch.float32)
+        self.conv1 = torch.nn.Conv1d(6, 32, 5, dtype=torch.float32)
         self.flatten = torch.nn.Flatten()
         self.linear1 = torch.nn.LazyLinear(50)
         self.leaky1 = torch.nn.ReLU()
-        self.linear2 = torch.nn.Linear(50, 30)
-        self.leaky2 = torch.nn.ReLU()
-        self.linear3 = torch.nn.Linear(30, 9 + 3 + 3)
+        self.linear3 = torch.nn.Linear(50, 9 + 3 + 3)
 
     def forward(self, x):
         x = self.conv1(x)
         x = self.flatten(x)
         x = self.leaky1(self.linear1(x))
-        x = self.leaky2(self.linear2(x))
         x = self.linear3(x)
 
         # Normalize the rotation matrix to make it a valid element of SO(3)
@@ -103,7 +101,7 @@ class RmiModel(torch.nn.Module):
     def _get_rmis(self, x):
         t = x[0, :].detach().to("cpu").numpy()
         gyro = x[1:4, :].detach().to("cpu").numpy()
-        accel = x[4:7, :].detach().to("cpu").numpy()
+        accel = x[4:7, :].detach().to("cpu").numpy()*9.80665
 
         DC = np.identity(3)
         DV = np.zeros((3, 1))
@@ -141,7 +139,7 @@ def train(
         )
 
     criterion = torch.nn.MSELoss()
-    optimizer = torch.optim.Adam(net.parameters(), lr=0.001, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(net.parameters(), lr=0.001, weight_decay=1e-3)
 
     # Training
     model_loss = 0.0
@@ -169,6 +167,10 @@ def train(
                 model_loss += loss.item()
                 print(loss)
 
+        running_loss = running_loss/(i+1)
+        if compare_model is not None and epoch == 0:
+            model_loss = model_loss/(i+1)
+
         # Calculate validation loss
         if validation_set is not None:
             running_vloss = 0.0
@@ -177,6 +179,7 @@ def train(
                 vpredict = net(vx[:, 1:, :])
                 vloss = criterion(vpredict, vy)
                 running_vloss += vloss
+            running_vloss = running_vloss/(i+1)
         else:
             running_vloss = 0
 
@@ -187,9 +190,10 @@ def train(
 
 
 if __name__ == "__main__":
-    N = 200  # Window size
+    N = 400  # Window size
     trainset1 = RmiDataset("./data/processed/v1_01_easy.csv", N)
-    trainset2 = RmiDataset("./data/processed/v1_02_medium.csv", N)
+    validset = RmiDataset("./data/processed/v1_02_medium.csv", N)
+    trainset2 = RmiDataset("./data/processed/v1_03_difficult.csv", N)
     trainset = ConcatDataset([trainset1, trainset2])
     net = RmiNet(window_size=N)
     model = RmiModel()
@@ -199,7 +203,7 @@ if __name__ == "__main__":
         trainset,
         batch_size=5,
         epochs=200,
-        validation_set=None,
-        compare_model=model,
+        validation_set=validset,
+        compare_model=None,
     )
     print("done")

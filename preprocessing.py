@@ -68,7 +68,7 @@ def preprocess_meas(imu_meas, gt_meas, time_offset=0.0):
         imu_meas["a_RS_S_x [m s^-2]"],
         imu_meas["a_RS_S_y [m s^-2]"],
         imu_meas["a_RS_S_z [m s^-2]"],
-    ])
+    ])/9.80665
 
     r_zw_a = np.array([
         gt_meas["p_RS_R_x [m]"],
@@ -90,7 +90,22 @@ def preprocess_meas(imu_meas, gt_meas, time_offset=0.0):
     )
     C_ab = C_ab.flatten()
 
-    processed = np.hstack((t, gyro, accel, r_zw_a, v_zw_a, C_ab))
+    b_a = np.array([
+        gt_meas["b_a_RS_S_x [m s^-2]"],
+        gt_meas["b_a_RS_S_y [m s^-2]"],
+        gt_meas["b_a_RS_S_z [m s^-2]"],
+    ])
+
+    b_g = np.array([
+        gt_meas["b_w_RS_S_x [rad s^-1]"],
+        gt_meas["b_w_RS_S_y [rad s^-1]"],
+        gt_meas["b_w_RS_S_z [rad s^-1]"],
+    ])
+
+
+
+
+    processed = np.hstack((t, gyro - b_g, accel - b_a, r_zw_a, v_zw_a, C_ab))
     return processed
 
 if __name__ == "__main__":
@@ -98,7 +113,24 @@ if __name__ == "__main__":
     gt_file = "./data/raw/V1_01_easy/mav0/state_groundtruth_estimate0/data.csv"
     preprocess_data(imu_file, gt_file,"./data/processed/v1_01_easy.csv")
 
-    # imu_file = "./data/raw/V1_02_medium/mav0/imu0/data.csv"
-    # gt_file = "./data/raw/V1_02_medium/mav0/state_groundtruth_estimate0/data.csv"
-    # preprocess_data(imu_file, gt_file,"./data/processed/v1_02_medium.csv")
+    imu_file = "./data/raw/V1_02_medium/mav0/imu0/data.csv"
+    gt_file = "./data/raw/V1_02_medium/mav0/state_groundtruth_estimate0/data.csv"
+    preprocess_data(imu_file, gt_file,"./data/processed/v1_02_medium.csv")
+
+    imu_file = "./data/raw/V1_03_difficult/mav0/imu0/data.csv"
+    gt_file = "./data/raw/V1_03_difficult/mav0/state_groundtruth_estimate0/data.csv"
+    preprocess_data(imu_file, gt_file,"./data/processed/v1_03_difficult.csv")
+
+    # imu_file = "./data/raw/V2_01_easy/mav0/imu0/data.csv"
+    # gt_file = "./data/raw/V2_01_easy/mav0/state_groundtruth_estimate0/data.csv"
+    # preprocess_data(imu_file, gt_file,"./data/processed/v2_01_easy.csv")
+
+    # imu_file = "./data/raw/V2_02_medium/mav0/imu0/data.csv"
+    # gt_file = "./data/raw/V2_02_medium/mav0/state_groundtruth_estimate0/data.csv"
+    # preprocess_data(imu_file, gt_file,"./data/processed/v2_02_medium.csv")
+
+    # imu_file = "./data/raw/V2_03_difficult/mav0/imu0/data.csv"
+    # gt_file = "./data/raw/V2_03_difficult/mav0/state_groundtruth_estimate0/data.csv"
+    # preprocess_data(imu_file, gt_file,"./data/processed/v2_03_difficult.csv")
+
     
