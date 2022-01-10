@@ -1,15 +1,16 @@
 from math import floor
-from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from torch.utils.data import Dataset, DataLoader, ConcatDataset, random_split
 import torch
 import numpy as np
 import pandas as pd
 from pylie import SO3
+from torch.utils.tensorboard import SummaryWriter
 
 # TODO: check gravity direction
 
 
 class RmiDataset(Dataset):
-    def __init__(self, filename, window_size=200, stride = 50):
+    def __init__(self, filename, window_size=200, stride=50):
         self._file = open(filename, "r")
         self._df = pd.read_csv(filename, sep=",", header=None)
         self._window_size = window_size
@@ -17,13 +18,13 @@ class RmiDataset(Dataset):
         pass
 
     def __len__(self):
-        return floor((self._df.shape[0] - self._window_size) / self._stride)
-
+        return floor((self._df.shape[0] - self._window_size) / self._stride) + 1
+        
     def __getitem__(self, idx):
-        range_start = idx*self._stride
+        range_start = idx * self._stride
         range_stop = range_start + self._window_size
 
-        if range_stop > self._df.shape[0]:
+        if range_stop > (self._df.shape[0] + 1):
             raise RuntimeError("programming error")
 
         sample_data = self._df[range_start:range_stop].to_numpy()
@@ -59,20 +60,34 @@ class RmiDataset(Dataset):
 
 
 class RmiNet(torch.nn.Module):
+    """
+    Convolutional neural network based RMI estimator
+    """
     def __init__(self, window_size=200):
         super(RmiNet, self).__init__()
 
-        self.conv1 = torch.nn.Conv1d(6, 32, 5, dtype=torch.float32)
-        self.flatten = torch.nn.Flatten()
-        self.linear1 = torch.nn.LazyLinear(50)
-        self.leaky1 = torch.nn.ReLU()
-        self.linear3 = torch.nn.Linear(50, 9 + 3 + 3)
+        self.conv_layer = torch.nn.Sequential(
+            torch.nn.Conv1d(6, 6, 5, padding=4),
+            torch.nn.LazyBatchNorm1d(),
+            torch.nn.GELU(),
+            torch.nn.Dropout(p=0.5),
+            torch.nn.Conv1d(6, 1, 5, padding=4, dilation=3),
+            torch.nn.LazyBatchNorm1d(),
+            torch.nn.GELU(),
+            torch.nn.Dropout(p=0.5),
+            torch.nn.Flatten(),
+        )
+        self.linear_layer = torch.nn.Sequential(
+            torch.nn.LazyLinear(30),
+            torch.nn.LazyBatchNorm1d(),
+            torch.nn.GELU(),
+            torch.nn.Dropout(p=0.3),
+            torch.nn.Linear(30, 15),
+        )
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.flatten(x)
-        x = self.leaky1(self.linear1(x))
-        x = self.linear3(x)
+        x = self.conv_layer(x)
+        x = self.linear_layer(x)
 
         # Normalize the rotation matrix to make it a valid element of SO(3)
         R = torch.reshape(x[:, 0:9], (x.shape[0], 3, 3))
@@ -92,6 +107,7 @@ class RmiModel(torch.nn.Module):
 
     def forward(self, x):
         # shape[0] is the batch size
+        x = x.detach().to("cpu").numpy()
         y = torch.zeros((x.shape[0], 15))
         for idx in range(x.shape[0]):
             y[idx, :] = self._get_rmis(x[idx, :, :])
@@ -99,9 +115,9 @@ class RmiModel(torch.nn.Module):
         return y
 
     def _get_rmis(self, x):
-        t = x[0, :].detach().to("cpu").numpy()
-        gyro = x[1:4, :].detach().to("cpu").numpy()
-        accel = x[4:7, :].detach().to("cpu").numpy()*9.80665
+        t = x[0, :]
+        gyro = x[1:4, :]
+        accel = x[4:7, :] * 9.80665
 
         DC = np.identity(3)
         DV = np.zeros((3, 1))
@@ -119,91 +135,18 @@ class RmiModel(torch.nn.Module):
         return torch.from_numpy(temp)
 
 
-def train(
-    net,
-    trainset,
-    output_filename="training_results",
-    epochs=10,
-    batch_size=1000,
-    validation_set=None,
-    compare_model=None,
-):
-
-    trainloader = DataLoader(
-        trainset, batch_size=batch_size, shuffle=False, num_workers=0
-    )
-
-    if validation_set is not None:
-        validloader = DataLoader(
-            validation_set, batch_size=batch_size, shuffle=False, num_workers=0
-        )
-
-    criterion = torch.nn.MSELoss()
-    optimizer = torch.optim.Adam(net.parameters(), lr=0.001, weight_decay=1e-3)
-
-    # Training
-    model_loss = 0.0
-    for epoch in range(epochs):
-
-        # Stochastic Mini-batches
-        running_loss = 0.0
-
-        for i, training_sample in enumerate(trainloader, 0):
-            x_train, y_train = training_sample
-            x_train = torch.autograd.Variable(x_train)
-            y_train = torch.autograd.Variable(y_train)
-
-            optimizer.zero_grad()
-
-            y_predict = net(x_train[:, 1:, :])
-            loss = criterion(y_predict, y_train)
-            loss.backward()
-            optimizer.step()
-
-            running_loss += loss.item()
-            if compare_model is not None and epoch == 0:
-                y_compare = compare_model(x_train)
-                loss = criterion(y_compare, y_train)
-                model_loss += loss.item()
-                print(loss)
-
-        running_loss = running_loss/(i+1)
-        if compare_model is not None and epoch == 0:
-            model_loss = model_loss/(i+1)
-
-        # Calculate validation loss
-        if validation_set is not None:
-            running_vloss = 0.0
-            for i, validation_sample in enumerate(validloader):
-                vx, vy = validation_sample
-                vpredict = net(vx[:, 1:, :])
-                vloss = criterion(vpredict, vy)
-                running_vloss += vloss
-            running_vloss = running_vloss/(i+1)
-        else:
-            running_vloss = 0
-
-        print(
-            "Epoch: %d, Running Loss: %.3f, Validation Loss: %.3f, Analytical Model Loss: %.3f"
-            % (epoch, running_loss, running_vloss, model_loss)
-        )
+    # num_samples = len(alldata)
+    # num_training = round(0.7 * num_samples)
+    # num_valid = round(0.2 * num_samples)
+    # num_test = num_samples - num_training - num_valid
+    # datasets = random_split(
+    # alldata,
+    # [num_training, num_valid, num_test],
+    # generator=torch.Generator().manual_seed(42),
+    # )
+    # trainset = datasets[0]
+    # validset = datasets[1]
 
 
-if __name__ == "__main__":
-    N = 400  # Window size
-    trainset1 = RmiDataset("./data/processed/v1_01_easy.csv", N)
-    validset = RmiDataset("./data/processed/v1_02_medium.csv", N)
-    trainset2 = RmiDataset("./data/processed/v1_03_difficult.csv", N)
-    trainset = ConcatDataset([trainset1, trainset2])
-    net = RmiNet(window_size=N)
-    model = RmiModel()
 
-    train(
-        net,
-        trainset,
-        batch_size=5,
-        epochs=200,
-        validation_set=validset,
-        compare_model=None,
-    )
-    print("done")
+  
