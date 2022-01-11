@@ -18,11 +18,20 @@ def train(
     compare_model=None,
     weights_file=None,
     output_file="rminet_weights.pth",
+    use_gpu = False
 ):
-
     if weights_file is not None:
         filename = "./results/" + weights_file
         net.load_state_dict(torch.load(filename))
+
+    if torch.cuda.is_available() and use_gpu:
+        device = "cuda"
+        print("GPU detected. Using GPU for training.")
+    else:
+        device = "cpu"
+        print("Using CPU for training.")
+
+    net.to(device)
 
     writer = SummaryWriter(flush_secs=1)
     trainloader = DataLoader(
@@ -52,6 +61,8 @@ def train(
         for i, training_sample in enumerate(trainloader, 0):
             # Get minibatch raw data
             x_train, y_train = training_sample
+            x_train = x_train.to(device)
+            y_train = y_train.to(device)
 
             # Use neural network to predict RMIs
             y_predict = net(x_train[:, 1:, :])
@@ -122,6 +133,9 @@ def train(
         else:
             running_vloss = 0
 
+        if epoch == 0:
+            print("Training Neural Network with " + str(count_parameters(net)) + " parameters.")
+
         print(
             "Epoch: %d, Running Loss: %.3f, Validation Loss: %.3f, Analytical Model Loss: %.3f"
             % (epoch, running_loss, running_vloss, model_loss)
@@ -174,11 +188,11 @@ if __name__ == "__main__":
     train(
         net,
         trainset,
-        batch_size=100,
+        batch_size=128,
         epochs=1000,
         validation_set=validset,
         compare_model=None,
-        output_file="rminet_weights.pt",
+        output_file="temp.pt",
     )
 
     print("done")

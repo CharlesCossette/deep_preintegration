@@ -97,12 +97,6 @@ v_zwa_a_gt = data["v_zwa_a"]
 C_ab_gt = data["C_ab"]
 g_a = np.array([0, 0, -9.80665]).reshape((-1, 1))
 
-
-fig = plt.figure()
-ax = plt.axes(projection="3d")
-ax.plot(r_zw_a_gt[0, :], r_zw_a_gt[1, :], r_zw_a_gt[2, :], label="Ground truth")
-
-
 traj = imu_dead_reckoning(
     t,
     r_zw_a_gt[:, 0].reshape((-1, 1)),
@@ -112,15 +106,22 @@ traj = imu_dead_reckoning(
     data["accel"],
 )
 
-ax.plot(traj["r"][0, :], traj["r"][1, :], traj["r"][2, :], label="Analytical Model")
-# ax.set_xlim(-5, 5)
-# ax.set_ylim(-5, 5)
-# ax.set_zlim(-5, 5)
-
 net = RmiNet(window_size=N)
-net.load_state_dict(torch.load("./results/rminet_weights.pt"))
+net.load_state_dict(torch.load("./results/temp.pt"))
 traj_net = test_rminet(net, test_file)
+
+fig = plt.figure()
+ax = plt.axes(projection="3d")
+ax.plot(r_zw_a_gt[0, :], r_zw_a_gt[1, :], r_zw_a_gt[2, :], label="Ground truth")
+
+ax.plot(traj["r"][0, :], traj["r"][1, :], traj["r"][2, :], label="Analytical Model")
+ax.set_xlim(-5, 5)
+ax.set_ylim(-5, 5)
+ax.set_zlim(-5, 5)
 
 ax.plot(traj_net["r"][0, :], traj_net["r"][1, :], traj_net["r"][2, :], label="RMI-Net")
 ax.legend()
+
+e_r_model = r_zw_a_gt - traj["r"]
+e_r_net = r_zw_a_gt - traj_net["r"]
 plt.show()

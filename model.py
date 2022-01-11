@@ -32,8 +32,9 @@ class RmiDataset(Dataset):
         gyro_data = sample_data[:, 1:4]
         accel_data = sample_data[:, 4:7]
 
-        DT = t_data[-1] - t_data[0]
-        g_a = np.array([0, 0, -9.80665]).reshape((-1, 1))
+        t_i = t_data[0]
+        t_j = t_data[-1]
+        DT = t_j - t_i
         r_zw_a_i = sample_data[0, 7:10].reshape((-1, 1))
         r_zw_a_j = sample_data[-1, 7:10].reshape((-1, 1))
         v_zw_a_i = sample_data[0, 10:13].reshape((-1, 1))
@@ -46,7 +47,10 @@ class RmiDataset(Dataset):
         DR, DV, DC = get_gt_rmis(
             r_zw_a_i, v_zw_a_i, C_ab_i, r_zw_a_j, v_zw_a_j, C_ab_j, DT
         )
-        self._poses = [(r_zw_a_i, v_zw_a_i, C_ab_i), (r_zw_a_j, v_zw_a_j, C_ab_j)]
+        self._poses = [
+            (t_i, r_zw_a_i, v_zw_a_i, C_ab_i),
+            (t_j, r_zw_a_j, v_zw_a_j, C_ab_j),
+        ]
         x = torch.from_numpy(np.vstack((t_data.T, gyro_data.T, accel_data.T)))
         x = x.to(torch.float32)
 
@@ -70,21 +74,25 @@ class RmiNet(torch.nn.Module):
 
         self.conv_layer = torch.nn.Sequential(
             torch.nn.Conv1d(6, 6, 5, padding=4),
-            torch.nn.LazyBatchNorm1d(),
+            #torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            torch.nn.Dropout(p=0.5),
+            #torch.nn.Dropout(p=0.5),
+            torch.nn.Conv1d(6, 6, 5, padding=4, dilation=3),
+            #torch.nn.LazyBatchNorm1d(),
+            torch.nn.GELU(),
+            #torch.nn.Dropout(p=0.5),
             torch.nn.Conv1d(6, 1, 5, padding=4, dilation=3),
-            torch.nn.LazyBatchNorm1d(),
+            #torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            torch.nn.Dropout(p=0.5),
+            #torch.nn.Dropout(p=0.5),
             torch.nn.Flatten(),
         )
         self.linear_layer = torch.nn.Sequential(
-            torch.nn.LazyLinear(30),
-            torch.nn.LazyBatchNorm1d(),
+            torch.nn.LazyLinear(50),
+            #torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            torch.nn.Dropout(p=0.3),
-            torch.nn.Linear(30, 15),
+            #torch.nn.Dropout(p=0.3),
+            torch.nn.Linear(50, 15),
         )
 
     def forward(self, x):
@@ -100,7 +108,6 @@ class RmiNet(torch.nn.Module):
         R_norm = torch.matmul(U, torch.matmul(S, VT))
         R_flat = torch.reshape(R_norm, (x.shape[0], 9))
 
-        # TODO: double check to see if the below operation works as intended
         return torch.cat((R_flat, x[:, 9:]), 1)
 
 
@@ -110,12 +117,12 @@ class RmiModel(torch.nn.Module):
 
     def forward(self, x):
         # shape[0] is the batch size
-        x = x.detach().to("cpu").numpy()
         y = torch.zeros((x.shape[0], 15))
         for idx in range(x.shape[0]):
             y[idx, :] = get_rmis(x[idx, :, :])
 
         return y
+
 
 def pose_loss(y, y_gt, with_info=False):
     DC = torch.reshape(y[:, 0:9], (y.shape[0], 3, 3))
@@ -138,31 +145,33 @@ def pose_loss(y, y_gt, with_info=False):
 
     return mse_loss(e, torch.zeros(e.shape))
 
+
 def get_rmis(x):
-    """ 
+    """
     Computes RMIs from accel and gyro data supplied as a big torch Tensor of
     dimension [7 x N], where N is the number of measurements.
 
     Zeroth row of tensor is timestamps, rows 1,2,3 are gyro, rows 4,5,6 are accel.
     """
+    
     t = x[0, :]
     gyro = x[1:4, :]
     accel = x[4:7, :]
 
-    DC = np.identity(3)
-    DV = np.zeros((3, 1))
-    DR = np.zeros((3, 1))
+    DC = torch.eye(3)
+    DV = torch.zeros((3, 1))
+    DR = torch.zeros((3, 1))
 
     for idx in range(1, x.shape[1]):
         dt = t[idx] - t[idx - 1]
         w = gyro[:, idx - 1].reshape((-1, 1))
         a = accel[:, idx - 1].reshape((-1, 1))
-        DR += DV * dt + 0.5 * DC @ a * (dt ** 2)
-        DV += DC @ (a * dt)
-        DC = DC @ SO3.Exp(w * dt)
+        DR += DV * dt + 0.5 * torch.matmul(DC, a) * (dt ** 2)
+        DV += torch.matmul(DC, a) * dt
+        DC = torch.matmul(DC, ExpSO3((w * dt).flatten().unsqueeze(0)).squeeze())
 
-    temp = np.hstack((DC.flatten(), DV.flatten(), DR.flatten()))
-    return torch.from_numpy(temp)
+    return torch.hstack((DC.flatten(), DV.flatten(), DR.flatten()))
+
 
 def get_gt_rmis(r_i, v_i, C_i, r_j, v_j, C_j, DT):
     g_a = np.array([0, 0, -9.80665]).reshape((-1, 1))

@@ -64,6 +64,7 @@ def load_processed_data(filename):
     }
 
 
+# TODO: move the SO(3) torch functions to pylie
 def LogSO3(C):
     """
     A torch-friendly implementation of the logarithmic map to SO3. This function
@@ -93,8 +94,48 @@ def LogSO3(C):
     return phi
 
 
+def ExpSO3(phi):
+    angle = phi.norm(dim=1, keepdim=True)
+    mask = angle[:, 0] < 1e-7
+    dim_batch = phi.shape[0]
+    Id = torch.eye(3).expand(dim_batch, 3, 3)
+
+    axis = phi[~mask] / angle[~mask]
+    c = angle[~mask].cos().unsqueeze(2)
+    s = angle[~mask].sin().unsqueeze(2)
+
+    Rot = phi.new_empty(dim_batch, 3, 3)
+    Rot[mask] = Id[mask] + batchwedge(phi[mask])
+    Rot[~mask] = c * Id[~mask] + (1 - c) * bouter(axis, axis) + s * batchwedge(axis)
+    return Rot
+
+
+def bouter(vec1, vec2):
+    """batch outer product"""
+    return torch.einsum("bi, bj -> bij", vec1, vec2)
+
+
 def batchvee(Phi):
     return torch.stack((Phi[:, 2, 1], Phi[:, 0, 2], Phi[:, 1, 0]), dim=1)
+
+
+def batchwedge(phi):
+    dim_batch = phi.shape[0]
+    zero = phi.new_zeros(dim_batch)
+    return torch.stack(
+        (
+            zero,
+            -phi[:, 2],
+            phi[:, 1],
+            phi[:, 2],
+            zero,
+            -phi[:, 0],
+            -phi[:, 1],
+            phi[:, 0],
+            zero,
+        ),
+        1,
+    ).view(dim_batch, 3, 3)
 
 
 def batchtrace(mat):
@@ -149,3 +190,22 @@ def imu_dead_reckoning(t, r0, v0, C0, gyro, accel):
     r_data = np.hstack(r_data)
     v_data = np.hstack(v_data)
     return {"t": t_data, "r": r_data, "v": v_data, "C": C_data}
+
+
+def unflatten_pose(x):
+    C = x[:, 0:9].reshape((3, 3))
+    v = x[:, 9:12].reshape((3, 1))
+    r = x[:, 12:].reshape((3, 1))
+    return r, v, C
+
+
+def flatten_pose(r, v, C):
+    if isinstance(r, np.ndarray):
+        return np.hstack((C.flatten(), v.flatten(), r.flatten()))
+    elif isinstance(r, torch.Tensor):
+        return np.hstack((C.flatten(), v.flatten(), r.flatten()))
+    else:
+        raise RuntimeError("Not an accepted variable type.")
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
