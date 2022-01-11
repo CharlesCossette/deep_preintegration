@@ -2,8 +2,9 @@ from math import floor
 from torch.utils.data import DataLoader, ConcatDataset, random_split
 import torch
 from model import *
+from utils import *
 from torch.utils.tensorboard import SummaryWriter
-
+torch.autograd.set_detect_anomaly(True)
 def train(
 net,
 trainset,
@@ -30,8 +31,9 @@ output_file = "rminet_weights.pth",
             validation_set, batch_size=batch_size, num_workers=0, drop_last=True
         )
 
-    criterion = torch.nn.MSELoss()
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.001, weight_decay=1e-3)
+    #criterion = torch.nn.MSELoss()
+    criterion = pose_loss
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.01, weight_decay=1e-3)
 
     # Training
     model_loss = 0.0
@@ -63,6 +65,7 @@ output_file = "rminet_weights.pth",
         if compare_model is not None and epoch == 0:
             model_loss = model_loss / (i + 1)
 
+        #print("Test SO3 Loss:" + str(pose_loss(y_train, y_predict)))
         # Calculate validation loss
         if validation_set is not None:
             running_vloss = 0.0
@@ -90,7 +93,7 @@ output_file = "rminet_weights.pth",
 
 if __name__ == "__main__":
     N = 200  # Window size
-    stride = 50
+    stride = 200
     trainset1 = RmiDataset("./data/processed/v1_01_easy.csv", N, stride)
     trainset2 = RmiDataset("./data/processed/v1_03_difficult.csv", N, stride)
     trainset3 = RmiDataset("./data/processed/v2_01_easy.csv", N, stride)
@@ -108,7 +111,7 @@ if __name__ == "__main__":
     train(
     net,
     trainset,
-    batch_size=4,
+    batch_size=100,
     epochs=1000,
     validation_set=validset,
     compare_model=None,
