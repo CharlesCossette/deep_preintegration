@@ -55,9 +55,9 @@ def test_rminet(net, filename):
             DR_dr, DV_dr, DC_dr = unflatten_pose(get_rmis(imu_window[0, :, :]))
 
             # Use RMIs to predict motion forward
-            C_j = C_i @ DC_gt
-            v_j = v_i + g_a * DT + C_i @ DV_gt
-            r_j = r_i + v_i * DT + 0.5 * g_a * (DT ** 2) + C_i @ DR_gt
+            C_j = C_i @ DC
+            v_j = v_i + g_a * DT + C_i @ DV
+            r_j = r_i + v_i * DT + 0.5 * g_a * (DT ** 2) + C_i @ DR
             r_i = r_j
             v_i = v_j
             C_i = C_j
@@ -84,7 +84,7 @@ def test_rminet(net, filename):
 
 
 if __name__ == "__main__":
-    N = 400  # window size
+    N = 200  # window size
     test_file = "./data/processed/v1_01_easy.csv"
     data = load_processed_data(test_file)
     t = data["timestamp"]
@@ -93,6 +93,7 @@ if __name__ == "__main__":
     C_ab_gt = data["C_ab"]
     g_a = torch.Tensor([0, 0, -9.80665]).reshape((-1, 1))
 
+    # Do classical dead reckoning
     traj = imu_dead_reckoning(
         t,
         r_zw_a_gt[:, 0].reshape((-1, 1)),
@@ -102,6 +103,7 @@ if __name__ == "__main__":
         data["accel"],
     )
 
+    #
     net = RmiNet(window_size=N)
     net.load_state_dict(torch.load("./results/rminet_weights.pt"))
     traj_net = test_rminet(net, test_file)
@@ -128,5 +130,7 @@ if __name__ == "__main__":
     ax = plt.axes()
     ax.plot(traj["t"], rmse_r_model, label="Analytical Model")
     ax.plot(traj_net["t"], rmse_r_net, label="RMI-Net")
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Position RMSE (m)")
     ax.legend()
     plt.show()

@@ -21,27 +21,44 @@ class RmiDataset(Dataset):
     filename: string
         path to csv
     window_size: int or "full"
-        Number of IMU measurements involved in the RMIs
+        Number of IMU measurements involved in the RMIs. If "full" then
+        the window size spans the entire dataset.
     stride: int
         Step interval when looping through the dataset
 
     """
 
-    def __init__(self, filename, window_size=200, stride=1):
+    def __init__(
+        self,
+        filename,
+        window_size=200,
+        stride=1,
+        with_model=False,
+    ):
         self._file = open(filename, "r")
         self._df = pd.read_csv(filename, sep=",")
+
         if window_size == "full":
             window_size = len(self._df)
 
         self._window_size = window_size
         self._stride = stride
+        self._with_model = with_model
         self._poses = None
+        self._quickloader = [None] * self.__len__()
         pass
 
     def __len__(self):
         return floor((self._df.shape[0] - self._window_size) / self._stride) + 1
 
     def __getitem__(self, idx):
+        # Get from quickloader if available, otherwise compute from scratch.
+        out = self._quickloader[idx]
+        if out is None:
+            out = self._compute_sample(idx)
+        return out
+
+    def _compute_sample(self, idx):
         range_start = idx * self._stride
         range_stop = range_start + self._window_size
 
@@ -50,41 +67,64 @@ class RmiDataset(Dataset):
 
         # Convert to Torch tensor.
         sample_data = torch.Tensor(self._df.iloc[range_start:range_stop, :].values)
+
+        # Get network input: gyro and accel data.
         t_data = sample_data[:, 0]
         gyro_data = sample_data[:, 1:4]
         accel_data = sample_data[:, 4:7]
+        x = torch.vstack((t_data.T, gyro_data.T, accel_data.T))
 
         t_i = t_data[0]
         t_j = t_data[-1]
         DT = t_j - t_i
-        r_zw_a_i = sample_data[0, 7:10].view((-1, 1))
-        r_zw_a_j = sample_data[-1, 7:10].view((-1, 1))
-        v_zw_a_i = sample_data[0, 10:13].view((-1, 1))
-        v_zw_a_j = sample_data[-1, 10:13].view((-1, 1))
-        C_ab_i = sample_data[0, 13:]
-        C_ab_j = sample_data[-1, 13:]
-        C_ab_i = C_ab_i.view((3, 3))
-        C_ab_j = C_ab_j.view((3, 3))
+        r_i = sample_data[0, 7:10].view((-1, 1))
+        r_j = sample_data[-1, 7:10].view((-1, 1))
+        v_i = sample_data[0, 10:13].view((-1, 1))
+        v_j = sample_data[-1, 10:13].view((-1, 1))
+        C_i = sample_data[0, 13:]
+        C_j = sample_data[-1, 13:]
+        C_i = C_i.view((3, 3))
+        C_j = C_j.view((3, 3))
 
-        DR, DV, DC = get_gt_rmis(
-            r_zw_a_i, v_zw_a_i, C_ab_i, r_zw_a_j, v_zw_a_j, C_ab_j, DT
-        )
+        # Get ground truth RMIs from ground truth pose information
+        DR_gt, DV_gt, DC_gt = get_gt_rmis(r_i, v_i, C_i, r_j, v_j, C_j, DT)
+        y = flatten_pose(DR_gt, DV_gt, DC_gt)
+
+        # Get RMIs from analytical model
+        if self._with_model:
+            y = torch.hstack((y, get_rmis(x)))
+
+        # Store absolute poses for convenience
         self._poses = [
-            flatten_pose(r_zw_a_i, v_zw_a_i, C_ab_i),
-            flatten_pose(r_zw_a_j, v_zw_a_j, C_ab_j),
+            flatten_pose(r_i, v_i, C_i),
+            flatten_pose(r_j, v_j, C_j),
         ]
-        x = torch.vstack((t_data.T, gyro_data.T, accel_data.T))
-        y = flatten_pose(DR, DV, DC)
+
+        # Store this result in quickloader for easy access when this index is
+        # called again.
+        self._quickloader[idx] = (x, y)
         return x, y
 
     def get_item_with_poses(self, idx):
+        """
+        Provides a sample with an additional third output: the absolute poses
+        at the beginning and end of the window.
+        """
         x, y = self.__getitem__(idx)
         return x, y, self._poses
+    
+    def reset(self):
+        """
+        Clears the internal quickloader so that all samples must be computed
+        from scratch.
+        """
+        self._quickloader = [None] * self.__len__()
+
 
 
 class RmiNet(torch.nn.Module):
     """
-    Convolutional neural network based RMI estimator
+    Convolutional neural network based DIRECT RMI estimator.
     """
 
     def __init__(self, window_size=200):
@@ -104,10 +144,6 @@ class RmiNet(torch.nn.Module):
             # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
             # torch.nn.Dropout(p=0.5),
-            torch.nn.Conv1d(32, 32, 5, padding=4, dilation=3),
-            # torch.nn.LazyBatchNorm1d(),
-            torch.nn.GELU(),
-            # torch.nn.Dropout(p=0.5),
             torch.nn.Conv1d(32, 1, 5, padding=4, dilation=3),
             # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
@@ -116,6 +152,10 @@ class RmiNet(torch.nn.Module):
         )
         self.linear_layer = torch.nn.Sequential(
             torch.nn.LazyLinear(50),
+            # torch.nn.LazyBatchNorm1d(),
+            torch.nn.GELU(),
+            # torch.nn.Dropout(p=0.3),
+            torch.nn.Linear(50, 50),
             # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
             # torch.nn.Dropout(p=0.3),
@@ -139,7 +179,14 @@ class RmiNet(torch.nn.Module):
         return torch.cat((R_flat, x[:, 9:]), 1)
 
 
+
+
+
 class RmiModel(torch.nn.Module):
+    """
+    A pytorch module implementation of the classic IMU dead-reckoning RMIs
+    from Forster et. al. (2017).
+    """
     def __init__(self, window_size=200):
         super(RmiModel, self).__init__()
 
@@ -155,10 +202,10 @@ class RmiModel(torch.nn.Module):
 def pose_loss(y, y_gt, with_info=False):
     DC = torch.reshape(y[:, 0:9], (y.shape[0], 3, 3))
     DC_gt = torch.reshape(y_gt[:, 0:9], (y_gt.shape[0], 3, 3))
-    e_phi = SO3.Log(torch.matmul(DC, torch.transpose(DC_gt, 1, 2)))
+    e_phi = SO3.Log(torch.matmul(torch.transpose(DC, 1, 2), DC_gt))
     e_v = y[:, 9:12] - y_gt[:, 9:12]
     e_r = y[:, 12:15] - y_gt[:, 12:15]
-    e = torch.hstack((10 * e_phi, e_v, e_r))
+    e = torch.hstack((20 * e_phi, e_v, e_r))
 
     if torch.any(torch.isnan(e)):
         raise RuntimeError("Nan for some reason.")

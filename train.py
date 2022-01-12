@@ -43,12 +43,15 @@ def train(
             validation_set, batch_size=batch_size, num_workers=0, drop_last=True
         )
 
-    criterion = torch.nn.MSELoss()
-    # criterion = pose_loss
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.001, weight_decay=1e-9)
+    # criterion = torch.nn.MSELoss()
+    criterion = pose_loss
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.01, weight_decay=0)
 
     # Training
     model_loss = 0.0
+    model_C_loss = 0.0
+    model_v_loss = 0.0
+    model_r_loss = 0.0
     for epoch in range(epochs):
 
         # Stochastic Mini-batches
@@ -70,6 +73,9 @@ def train(
             # Evaluate (custom) loss function
             if criterion is pose_loss:
                 loss, info = criterion(y_predict, y_train, with_info=True)
+                running_C_loss += info["C_loss"]
+                running_v_loss += info["v_loss"]
+                running_r_loss += info["r_loss"]
             else:
                 loss = criterion(y_predict, y_train)
 
@@ -81,16 +87,17 @@ def train(
 
             running_loss += loss.item()
 
-            if criterion is pose_loss:
-                running_C_loss += info["C_loss"]
-                running_v_loss += info["v_loss"]
-                running_r_loss += info["r_loss"]
-
             # If an alternate model was fed as a comparison point, evaluate the
             # loss once.
             if compare_model is not None and epoch == 0:
                 y_compare = compare_model(x_train)
-                loss = criterion(y_compare, y_train)
+                if criterion is pose_loss:
+                    loss, info = criterion(y_compare, y_train, with_info=True)
+                    model_C_loss += info["C_loss"]
+                    model_v_loss += info["v_loss"]
+                    model_r_loss += info["r_loss"]
+                else:
+                    loss = criterion(y_compare, y_train)
                 model_loss += loss.item()
                 print(loss)
 
@@ -102,6 +109,9 @@ def train(
 
         if compare_model is not None and epoch == 0:
             model_loss /= i + 1
+            model_C_loss /= i + 1
+            model_v_loss /= i + 1
+            model_r_loss /= i + 1
 
         # Calculate validation loss
         running_vloss = 0.0
@@ -151,19 +161,31 @@ def train(
         if criterion is pose_loss:
             writer.add_scalars(
                 "Loss/Rotation",
-                {"Training": running_C_loss, "Validation": running_C_vloss},
+                {
+                    "Training": running_C_loss,
+                    "Validation": running_C_vloss,
+                    "Model": model_C_loss,
+                },
                 epoch,
             )
 
             writer.add_scalars(
                 "Loss/Velocity",
-                {"Training": running_v_loss, "Validation": running_v_vloss},
+                {
+                    "Training": running_v_loss,
+                    "Validation": running_v_vloss,
+                    "Model": model_v_loss,
+                },
                 epoch,
             )
 
             writer.add_scalars(
                 "Loss/Position",
-                {"Training": running_r_loss, "Validation": running_r_vloss},
+                {
+                    "Training": running_r_loss,
+                    "Validation": running_r_vloss,
+                    "Model": model_r_loss,
+                },
                 epoch,
             )
 
@@ -194,6 +216,7 @@ if __name__ == "__main__":
         validation_set=validset,
         compare_model=model,
         output_file="rminet_weights.pt",
+        weights_file="rminet_weights.pt",
     )
 
     print("done")
