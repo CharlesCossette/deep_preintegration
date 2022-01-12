@@ -18,7 +18,7 @@ def train(
     compare_model=None,
     weights_file=None,
     output_file="rminet_weights.pth",
-    use_gpu = False
+    use_gpu=False,
 ):
     if weights_file is not None:
         filename = "./results/" + weights_file
@@ -43,9 +43,9 @@ def train(
             validation_set, batch_size=batch_size, num_workers=0, drop_last=True
         )
 
-    # criterion = torch.nn.MSELoss()
-    criterion = pose_loss
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.01, weight_decay=1e-5)
+    criterion = torch.nn.MSELoss()
+    # criterion = pose_loss
+    optimizer = torch.optim.SGD(net.parameters(), lr=0.001, weight_decay=1e-9)
 
     # Training
     model_loss = 0.0
@@ -66,8 +66,8 @@ def train(
 
             # Use neural network to predict RMIs
             y_predict = net(x_train[:, 1:, :])
-            # Evaluate (custom) loss function
 
+            # Evaluate (custom) loss function
             if criterion is pose_loss:
                 loss, info = criterion(y_predict, y_train, with_info=True)
             else:
@@ -104,12 +104,11 @@ def train(
             model_loss /= i + 1
 
         # Calculate validation loss
+        running_vloss = 0.0
+        running_C_vloss = 0.0
+        running_v_vloss = 0.0
+        running_r_vloss = 0.0
         if validation_set is not None:
-            running_vloss = 0.0
-            if criterion is pose_loss:
-                running_C_vloss = 0.0
-                running_v_vloss = 0.0
-                running_r_vloss = 0.0
             for i, validation_sample in enumerate(validloader):
                 vx, vy = validation_sample
                 vpredict = net(vx[:, 1:, :])
@@ -130,14 +129,16 @@ def train(
                 running_C_vloss /= i + 1
                 running_v_vloss /= i + 1
                 running_r_vloss /= i + 1
-        else:
-            running_vloss = 0
 
         if epoch == 0:
-            print("Training Neural Network with " + str(count_parameters(net)) + " parameters.")
+            print(
+                "Training Neural Network with "
+                + str(count_parameters(net))
+                + " parameters."
+            )
 
         print(
-            "Epoch: %d, Running Loss: %.3f, Validation Loss: %.3f, Analytical Model Loss: %.3f"
+            "Epoch: %d, Running Loss: %.6f, Validation Loss: %.6f, Analytical Model Loss: %.6f"
             % (epoch, running_loss, running_vloss, model_loss)
         )
 
@@ -172,7 +173,7 @@ def train(
 
 if __name__ == "__main__":
     N = 200  # Window size
-    stride = 10
+    stride = 199
     trainset1 = RmiDataset("./data/processed/v1_01_easy.csv", N, stride)
     trainset2 = RmiDataset("./data/processed/v1_03_difficult.csv", N, stride)
     trainset3 = RmiDataset("./data/processed/v2_01_easy.csv", N, stride)
@@ -187,12 +188,12 @@ if __name__ == "__main__":
 
     train(
         net,
-        trainset,
-        batch_size=128,
+        trainset=trainset1,
+        batch_size=10,
         epochs=1000,
         validation_set=validset,
-        compare_model=None,
-        output_file="temp.pt",
+        compare_model=model,
+        output_file="rminet_weights.pt",
     )
 
     print("done")

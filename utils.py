@@ -4,7 +4,7 @@ from csv import reader
 import pandas as pd
 import torch
 from torch.nn.functional import mse_loss
-from pylie import SO3
+from pylie.torch import SO3
 
 
 def quat_to_matrix(x, y, z, w):
@@ -47,13 +47,14 @@ def csv_to_list_of_dict(filename):
 
 
 def load_processed_data(filename):
-    df = pd.read_csv(filename)
-    t = df.iloc[:, 0].to_numpy()
-    gyro = df.iloc[:, 1:4].to_numpy().T
-    accel = df.iloc[:, 4:7].to_numpy().T
-    r_zw_a_gt = df.iloc[:, 7:10].to_numpy().T
-    v_zw_a_gt = df.iloc[:, 10:13].to_numpy().T
-    C_ab_gt = df.iloc[:, 13:].to_numpy().T
+    # TODO: get rid of this function. merge with RmiDataset somehow.
+    data = torch.Tensor(pd.read_csv(filename).values)
+    t = data[:, 0]
+    gyro = data[:, 1:4].T
+    accel = data[:, 4:7].T
+    r_zw_a_gt = data[:, 7:10].T
+    v_zw_a_gt = data[:, 10:13].T
+    C_ab_gt = data[:, 13:].T
     return {
         "timestamp": t,
         "accel": accel,
@@ -62,80 +63,6 @@ def load_processed_data(filename):
         "v_zwa_a": v_zw_a_gt,
         "C_ab": C_ab_gt,
     }
-
-
-# TODO: move the SO(3) torch functions to pylie
-def LogSO3(C):
-    """
-    A torch-friendly implementation of the logarithmic map to SO3. This function
-    maps a batch of rotation matrices C [N x 3 x 3] to their corresponding
-    elements in R^n. Output dimensions are [N x 3]
-    """
-    dim_batch = C.shape[0]
-    Id = torch.eye(3).expand(dim_batch, 3, 3)
-
-    cos_angle = (0.5 * batchtrace(C) - 0.5).clamp(-1.0 + 1e-7, 1.0 - 1e-7)
-    # Clip cos(angle) to its proper domain to avoid NaNs from rounding
-    # errors
-    angle = cos_angle.acos()
-    mask = angle < 1e-8
-    if mask.sum() == 0:
-        angle = angle.unsqueeze(1).unsqueeze(1)
-        return batchvee((0.5 * angle / angle.sin()) * (C - C.transpose(1, 2)))
-    elif mask.sum() == dim_batch:
-        # If angle is close to zero, use first-order Taylor expansion
-        return batchvee(C - Id)
-    phi = batchvee(C - Id)
-    angle = angle
-    phi[~mask] = batchvee(
-        (0.5 * angle[~mask] / angle[~mask].sin()).unsqueeze(1).unsqueeze(2)
-        * (C[~mask] - C[~mask].transpose(1, 2))
-    )
-    return phi
-
-
-def ExpSO3(phi):
-    angle = phi.norm(dim=1, keepdim=True)
-    mask = angle[:, 0] < 1e-7
-    dim_batch = phi.shape[0]
-    Id = torch.eye(3).expand(dim_batch, 3, 3)
-
-    axis = phi[~mask] / angle[~mask]
-    c = angle[~mask].cos().unsqueeze(2)
-    s = angle[~mask].sin().unsqueeze(2)
-
-    Rot = phi.new_empty(dim_batch, 3, 3)
-    Rot[mask] = Id[mask] + batchwedge(phi[mask])
-    Rot[~mask] = c * Id[~mask] + (1 - c) * bouter(axis, axis) + s * batchwedge(axis)
-    return Rot
-
-
-def bouter(vec1, vec2):
-    """batch outer product"""
-    return torch.einsum("bi, bj -> bij", vec1, vec2)
-
-
-def batchvee(Phi):
-    return torch.stack((Phi[:, 2, 1], Phi[:, 0, 2], Phi[:, 1, 0]), dim=1)
-
-
-def batchwedge(phi):
-    dim_batch = phi.shape[0]
-    zero = phi.new_zeros(dim_batch)
-    return torch.stack(
-        (
-            zero,
-            -phi[:, 2],
-            phi[:, 1],
-            phi[:, 2],
-            zero,
-            -phi[:, 0],
-            -phi[:, 1],
-            phi[:, 0],
-            zero,
-        ),
-        1,
-    ).view(dim_batch, 3, 3)
 
 
 def batchtrace(mat):
@@ -169,8 +96,8 @@ def imu_dead_reckoning(t, r0, v0, C0, gyro, accel):
     r = r0
     v = v0
     C = C0
-    g = np.array([0, 0, -9.80665]).reshape((-1, 1))
-    t_data = [0]
+    g = torch.Tensor([0, 0, -9.80665]).reshape((-1, 1))
+    t_data = [torch.Tensor([0.0])]
     r_data = [r]
     v_data = [v]
     C_data = [C]
@@ -180,32 +107,58 @@ def imu_dead_reckoning(t, r0, v0, C0, gyro, accel):
         a = accel[:, i - 1].reshape((-1, 1))
         r = r + v * dt + 0.5 * g * (dt ** 2) + 0.5 * C @ a * (dt ** 2)
         v = v + g * dt + C @ a * dt
-        C = C @ SO3.Exp(dt * w)
+        C = C @ SO3.Exp(dt * w).squeeze()
+
         t_data.append(t[i])
         r_data.append(r)
         v_data.append(v)
         C_data.append(C)
 
-    t_data = np.hstack(t_data)
-    r_data = np.hstack(r_data)
-    v_data = np.hstack(v_data)
+    t_data = torch.hstack(t_data)
+    r_data = torch.hstack(r_data)
+    v_data = torch.hstack(v_data)
     return {"t": t_data, "r": r_data, "v": v_data, "C": C_data}
 
 
 def unflatten_pose(x):
-    C = x[:, 0:9].reshape((3, 3))
-    v = x[:, 9:12].reshape((3, 1))
-    r = x[:, 12:].reshape((3, 1))
+    """
+    Decomposes an [N x 15] array into position, velocity, and rotation arrays.
+
+    """
+
+    is_batch = len(x.shape) > 1
+
+    if not is_batch == 1:
+        C = x[0:9].view((3, 3))
+        v = x[9:12].view((3, 1))
+        r = x[12:].view((3, 1))
+    else:
+        dim_batch = x.shape[0]
+        C = x[:, 0:9].view((dim_batch, 3, 3))
+        v = x[:, 9:12].view((dim_batch, 3))
+        r = x[:, 12:].view((dim_batch, 3))
+
     return r, v, C
 
 
 def flatten_pose(r, v, C):
+    """
+    Takes [3 x 1] position, [3 x 1] velocity, and [3 x 3] rotation arrays and
+    flattens + stacks them all into a [1 x 15] array.
+
+    TODO: accept batch
+    """
+
     if isinstance(r, np.ndarray):
         return np.hstack((C.flatten(), v.flatten(), r.flatten()))
     elif isinstance(r, torch.Tensor):
-        return np.hstack((C.flatten(), v.flatten(), r.flatten()))
+        return torch.hstack((C.flatten(), v.flatten(), r.flatten()))
     else:
         raise RuntimeError("Not an accepted variable type.")
 
+
 def count_parameters(model):
+    """
+    Counts the number of trainable parameters in a neural network.
+    """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)

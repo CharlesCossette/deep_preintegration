@@ -1,4 +1,6 @@
 from model import RmiDataset
+import pandas as pd
+import torch
 
 
 def test_length():
@@ -31,5 +33,14 @@ def test_stride_window():
         dataset[i]
 
 
+def test_full():
+    filename = "./data/processed/v1_01_easy.csv"
+    dataset = RmiDataset(filename, window_size="full", stride=1)
+    l = len(dataset)
+    x, y = dataset[0]
+    x_test = torch.Tensor(pd.read_csv(filename).values)
+    assert torch.allclose(x, x_test[:, 0:7].T)
+
+
 if __name__ == "__main__":
-    test_length2()
+    test_full()

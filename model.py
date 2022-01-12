@@ -1,17 +1,38 @@
 from math import floor
 from torch.utils.data import Dataset, DataLoader, ConcatDataset, random_split
 import torch
-import numpy as np
 import pandas as pd
-from pylie import SO3
+from pylie.torch import SO3
 from utils import *
 from torch.utils.tensorboard import SummaryWriter
 
 
 class RmiDataset(Dataset):
-    def __init__(self, filename, window_size=200, stride=50):
+    """
+    Generic dataset object that extracts RMIs from the IMU measurements over a
+    specified window size. Requires the data to be stored in a csv file where
+    the columns are:
+
+    | |Gyro    |Accel   |Pos     |Vel     |Rotation (row-major format)
+     t,wz,wy,wz,ax,ay,az,rx,ry,rz,vx,vy,vz,c11,c12,c12,c21,c22,c23,c31,c32,c33
+
+    PARAMETERS:
+    -----------
+    filename: string
+        path to csv
+    window_size: int or "full"
+        Number of IMU measurements involved in the RMIs
+    stride: int
+        Step interval when looping through the dataset
+
+    """
+
+    def __init__(self, filename, window_size=200, stride=1):
         self._file = open(filename, "r")
         self._df = pd.read_csv(filename, sep=",")
+        if window_size == "full":
+            window_size = len(self._df)
+
         self._window_size = window_size
         self._stride = stride
         self._poses = None
@@ -27,7 +48,8 @@ class RmiDataset(Dataset):
         if range_stop > (self._df.shape[0] + 1):
             raise RuntimeError("programming error")
 
-        sample_data = self._df.iloc[range_start:range_stop, :].to_numpy()
+        # Convert to Torch tensor.
+        sample_data = torch.Tensor(self._df.iloc[range_start:range_stop, :].values)
         t_data = sample_data[:, 0]
         gyro_data = sample_data[:, 1:4]
         accel_data = sample_data[:, 4:7]
@@ -35,27 +57,24 @@ class RmiDataset(Dataset):
         t_i = t_data[0]
         t_j = t_data[-1]
         DT = t_j - t_i
-        r_zw_a_i = sample_data[0, 7:10].reshape((-1, 1))
-        r_zw_a_j = sample_data[-1, 7:10].reshape((-1, 1))
-        v_zw_a_i = sample_data[0, 10:13].reshape((-1, 1))
-        v_zw_a_j = sample_data[-1, 10:13].reshape((-1, 1))
+        r_zw_a_i = sample_data[0, 7:10].view((-1, 1))
+        r_zw_a_j = sample_data[-1, 7:10].view((-1, 1))
+        v_zw_a_i = sample_data[0, 10:13].view((-1, 1))
+        v_zw_a_j = sample_data[-1, 10:13].view((-1, 1))
         C_ab_i = sample_data[0, 13:]
         C_ab_j = sample_data[-1, 13:]
-        C_ab_i = C_ab_i.reshape((3, 3))
-        C_ab_j = C_ab_j.reshape((3, 3))
+        C_ab_i = C_ab_i.view((3, 3))
+        C_ab_j = C_ab_j.view((3, 3))
 
         DR, DV, DC = get_gt_rmis(
             r_zw_a_i, v_zw_a_i, C_ab_i, r_zw_a_j, v_zw_a_j, C_ab_j, DT
         )
         self._poses = [
-            (t_i, r_zw_a_i, v_zw_a_i, C_ab_i),
-            (t_j, r_zw_a_j, v_zw_a_j, C_ab_j),
+            flatten_pose(r_zw_a_i, v_zw_a_i, C_ab_i),
+            flatten_pose(r_zw_a_j, v_zw_a_j, C_ab_j),
         ]
-        x = torch.from_numpy(np.vstack((t_data.T, gyro_data.T, accel_data.T)))
-        x = x.to(torch.float32)
-
-        y = torch.from_numpy(np.hstack((DC.flatten(), DV.flatten(), DR.flatten())))
-        y = y.to(torch.float32)
+        x = torch.vstack((t_data.T, gyro_data.T, accel_data.T))
+        y = flatten_pose(DR, DV, DC)
         return x, y
 
     def get_item_with_poses(self, idx):
@@ -73,29 +92,38 @@ class RmiNet(torch.nn.Module):
         super(RmiNet, self).__init__()
 
         self.conv_layer = torch.nn.Sequential(
-            torch.nn.Conv1d(6, 6, 5, padding=4),
-            #torch.nn.LazyBatchNorm1d(),
+            torch.nn.Conv1d(6, 32, 5, padding=4),
+            # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            #torch.nn.Dropout(p=0.5),
-            torch.nn.Conv1d(6, 6, 5, padding=4, dilation=3),
-            #torch.nn.LazyBatchNorm1d(),
+            # torch.nn.Dropout(p=0.5),
+            torch.nn.Conv1d(32, 32, 5, padding=4, dilation=3),
+            # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            #torch.nn.Dropout(p=0.5),
-            torch.nn.Conv1d(6, 1, 5, padding=4, dilation=3),
-            #torch.nn.LazyBatchNorm1d(),
+            # torch.nn.Dropout(p=0.5),
+            torch.nn.Conv1d(32, 32, 5, padding=4, dilation=3),
+            # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            #torch.nn.Dropout(p=0.5),
+            # torch.nn.Dropout(p=0.5),
+            torch.nn.Conv1d(32, 32, 5, padding=4, dilation=3),
+            # torch.nn.LazyBatchNorm1d(),
+            torch.nn.GELU(),
+            # torch.nn.Dropout(p=0.5),
+            torch.nn.Conv1d(32, 1, 5, padding=4, dilation=3),
+            # torch.nn.LazyBatchNorm1d(),
+            torch.nn.GELU(),
+            # torch.nn.Dropout(p=0.5),
             torch.nn.Flatten(),
         )
         self.linear_layer = torch.nn.Sequential(
             torch.nn.LazyLinear(50),
-            #torch.nn.LazyBatchNorm1d(),
+            # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            #torch.nn.Dropout(p=0.3),
+            # torch.nn.Dropout(p=0.3),
             torch.nn.Linear(50, 15),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
+        x = x.detach().clone()
         x[:, 3:6, :] /= 9.80665
         x = self.conv_layer(x)
         x = self.linear_layer(x)
@@ -127,7 +155,7 @@ class RmiModel(torch.nn.Module):
 def pose_loss(y, y_gt, with_info=False):
     DC = torch.reshape(y[:, 0:9], (y.shape[0], 3, 3))
     DC_gt = torch.reshape(y_gt[:, 0:9], (y_gt.shape[0], 3, 3))
-    e_phi = LogSO3(torch.matmul(DC, torch.transpose(DC_gt, 1, 2)))
+    e_phi = SO3.Log(torch.matmul(DC, torch.transpose(DC_gt, 1, 2)))
     e_v = y[:, 9:12] - y_gt[:, 9:12]
     e_r = y[:, 12:15] - y_gt[:, 12:15]
     e = torch.hstack((10 * e_phi, e_v, e_r))
@@ -153,7 +181,7 @@ def get_rmis(x):
 
     Zeroth row of tensor is timestamps, rows 1,2,3 are gyro, rows 4,5,6 are accel.
     """
-    
+
     t = x[0, :]
     gyro = x[1:4, :]
     accel = x[4:7, :]
@@ -166,15 +194,15 @@ def get_rmis(x):
         dt = t[idx] - t[idx - 1]
         w = gyro[:, idx - 1].reshape((-1, 1))
         a = accel[:, idx - 1].reshape((-1, 1))
-        DR += DV * dt + 0.5 * torch.matmul(DC, a) * (dt ** 2)
+        DR += DV * dt + 0.5 * DC @ a * (dt ** 2)
         DV += torch.matmul(DC, a) * dt
-        DC = torch.matmul(DC, ExpSO3((w * dt).flatten().unsqueeze(0)).squeeze())
+        DC = torch.matmul(DC, SO3.Exp(w * dt).squeeze())
 
-    return torch.hstack((DC.flatten(), DV.flatten(), DR.flatten()))
+    return flatten_pose(DR, DV, DC)
 
 
 def get_gt_rmis(r_i, v_i, C_i, r_j, v_j, C_j, DT):
-    g_a = np.array([0, 0, -9.80665]).reshape((-1, 1))
+    g_a = torch.Tensor([0, 0, -9.80665]).view((-1, 1))
     DC = C_i.T @ C_j
     DV = C_i.T @ (v_j - v_i - DT * g_a)
     DR = C_i.T @ (r_j - r_i - v_i * DT - 0.5 * g_a * (DT ** 2))
