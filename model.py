@@ -92,6 +92,7 @@ class RmiDataset(Dataset):
 
         # Get RMIs from analytical model
         if self._with_model:
+            print(str(idx) + ": Computing RMI analytically from scratch.")
             y = torch.hstack((y, get_rmis(x)))
 
         # Store absolute poses for convenience
@@ -112,14 +113,13 @@ class RmiDataset(Dataset):
         """
         x, y = self.__getitem__(idx)
         return x, y, self._poses
-    
+
     def reset(self):
         """
         Clears the internal quickloader so that all samples must be computed
         from scratch.
         """
         self._quickloader = [None] * self.__len__()
-
 
 
 class RmiNet(torch.nn.Module):
@@ -133,32 +133,20 @@ class RmiNet(torch.nn.Module):
 
         self.conv_layer = torch.nn.Sequential(
             torch.nn.Conv1d(6, 32, 5, padding=4),
-            # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            # torch.nn.Dropout(p=0.5),
             torch.nn.Conv1d(32, 32, 5, padding=4, dilation=3),
-            # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            # torch.nn.Dropout(p=0.5),
             torch.nn.Conv1d(32, 32, 5, padding=4, dilation=3),
-            # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            # torch.nn.Dropout(p=0.5),
             torch.nn.Conv1d(32, 1, 5, padding=4, dilation=3),
-            # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            # torch.nn.Dropout(p=0.5),
             torch.nn.Flatten(),
         )
         self.linear_layer = torch.nn.Sequential(
             torch.nn.LazyLinear(50),
-            # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            # torch.nn.Dropout(p=0.3),
             torch.nn.Linear(50, 50),
-            # torch.nn.LazyBatchNorm1d(),
             torch.nn.GELU(),
-            # torch.nn.Dropout(p=0.3),
             torch.nn.Linear(50, 15),
         )
 
@@ -179,14 +167,111 @@ class RmiNet(torch.nn.Module):
         return torch.cat((R_flat, x[:, 9:]), 1)
 
 
+class DeltaRmiNet(torch.nn.Module):
+    """
+    Convolutional neural network based RMI corrector. The network outputs a
+    "delta" which is then "added" to the analytical RMIs to produce the final
+    estimate.
+    """
 
+    def __init__(self, window_size=200):
+        self._window_size = window_size
+        super(DeltaRmiNet, self).__init__()
+
+        self.conv_layer = torch.nn.Sequential(
+            torch.nn.Conv1d(6, 32, 5, padding=4),
+            torch.nn.GELU(),
+            torch.nn.Conv1d(32, 6, 5, padding=4, dilation=3),
+            torch.nn.GELU(),
+            torch.nn.Flatten(),
+        )
+        self.linear_layer = torch.nn.Sequential(
+            torch.nn.LazyLinear(50),
+            torch.nn.GELU(),
+            torch.nn.Linear(50, 9),
+        )
+
+    def forward(self, x: torch.Tensor):
+        x = x.detach().clone()
+        x = x[:, 1:, :]
+        x[:, 3:6, :] /= 9.80665
+        x = self.conv_layer(x)
+        x = self.linear_layer(x)
+        return x
+
+
+class DeltaTransRmiNet(torch.nn.Module):
+    """
+    Convolutional neural network based RMI corrector. The network outputs a
+    "delta" which is then "added" to the analytical RMIs to produce the final
+    estimate.
+    """
+
+    def __init__(self, window_size=200):
+        self._window_size = window_size
+        super(DeltaTransRmiNet, self).__init__()
+
+        self.conv_layer = torch.nn.Sequential(
+            torch.nn.Conv1d(6, 32, 5, padding=4),
+            torch.nn.GELU(),
+            torch.nn.Conv1d(32, 6, 5, padding=4, dilation=3),
+            torch.nn.GELU(),
+            torch.nn.Flatten(),
+        )
+        self.linear_layer = torch.nn.Sequential(
+            torch.nn.LazyLinear(50),
+            torch.nn.GELU(),
+            torch.nn.Linear(50, 6),
+        )
+
+    def forward(self, x: torch.Tensor):
+        x = x.detach().clone()
+        x = x[:, 1:, :]
+        x[:, 3:6, :] /= 9.80665
+        x = self.conv_layer(x)
+        x = self.linear_layer(x)
+        return x
+
+
+class DeltaRotRmiNet(torch.nn.Module):
+    """
+    Convolutional neural network based RMI corrector. The network outputs a
+    "delta" which is then "added" to the analytical RMIs to produce the final
+    estimate.
+    """
+
+    def __init__(self, window_size=200):
+        self._window_size = window_size
+        super(DeltaRotRmiNet, self).__init__()
+
+        self.conv_layer = torch.nn.Sequential(
+            torch.nn.Conv1d(6, 32, 5, padding=4),
+            torch.nn.GELU(),
+            torch.nn.Conv1d(32, 6, 5, padding=4, dilation=3),
+            torch.nn.GELU(),
+            torch.nn.Flatten(),
+        )
+        self.linear_layer = torch.nn.Sequential(
+            torch.nn.LazyLinear(50),
+            torch.nn.GELU(),
+            torch.nn.Linear(50, 3),
+        )
+
+    def forward(self, x: torch.Tensor):
+        x = x.detach().clone()
+        x = x[:, 1:, :]
+        x[:, 3:6, :] /= 9.80665
+        x = self.conv_layer(x)
+        x = self.linear_layer(x)
+        return x
 
 
 class RmiModel(torch.nn.Module):
     """
-    A pytorch module implementation of the classic IMU dead-reckoning RMIs
-    from Forster et. al. (2017).
+    Classic IMU dead-reckoning RMIs from Forster et. al. (2017) wrapped in a
+    pytorch "neural network" just for easy hot-swapping and comparison.
     """
+
     def __init__(self, window_size=200):
         super(RmiModel, self).__init__()
 
@@ -199,34 +284,15 @@ class RmiModel(torch.nn.Module):
         return y
 
 
-def pose_loss(y, y_gt, with_info=False):
-    DC = torch.reshape(y[:, 0:9], (y.shape[0], 3, 3))
-    DC_gt = torch.reshape(y_gt[:, 0:9], (y_gt.shape[0], 3, 3))
-    e_phi = SO3.Log(torch.matmul(torch.transpose(DC, 1, 2), DC_gt))
-    e_v = y[:, 9:12] - y_gt[:, 9:12]
-    e_r = y[:, 12:15] - y_gt[:, 12:15]
-    e = torch.hstack((20 * e_phi, e_v, e_r))
-
-    if torch.any(torch.isnan(e)):
-        raise RuntimeError("Nan for some reason.")
-
-    if with_info:
-        info = {
-            "C_loss": torch.sqrt(mse_loss(e_phi, torch.zeros(e_phi.shape))),
-            "v_loss": torch.sqrt(mse_loss(e_v, torch.zeros(e_v.shape))),
-            "r_loss": torch.sqrt(mse_loss(e_r, torch.zeros(e_r.shape))),
-        }
-        return mse_loss(e, torch.zeros(e.shape)), info
-
-    return mse_loss(e, torch.zeros(e.shape))
-
-
 def get_rmis(x):
     """
     Computes RMIs from accel and gyro data supplied as a big torch Tensor of
     dimension [7 x N], where N is the number of measurements.
 
     Zeroth row of tensor is timestamps, rows 1,2,3 are gyro, rows 4,5,6 are accel.
+
+    Unfortunately the iterative/recursive nature of this model makes it difficult
+    to implement for a batch.
     """
 
     t = x[0, :]
@@ -249,6 +315,9 @@ def get_rmis(x):
 
 
 def get_gt_rmis(r_i, v_i, C_i, r_j, v_j, C_j, DT):
+    """
+    Get RMIs from the ground truth absolute poses.
+    """
     g_a = torch.Tensor([0, 0, -9.80665]).view((-1, 1))
     DC = C_i.T @ C_j
     DV = C_i.T @ (v_j - v_i - DT * g_a)

@@ -41,13 +41,15 @@ def test_full():
     x_test = torch.Tensor(pd.read_csv(filename).values)
     assert torch.allclose(x, x_test[:, 0:7].T)
 
+
 def test_multiple_call():
     filename = "./data/processed/v1_01_easy.csv"
     dataset = RmiDataset(filename, window_size="full", stride=1)
-    x,y = dataset[0]
-    z,w = dataset[0]
-    assert (x,y) == (z,w)
-    assert (x,y) == dataset._quickloader[0]
+    x, y = dataset[0]
+    z, w = dataset[0]
+    assert (x, y) == (z, w)
+    assert (x, y) == dataset._quickloader[0]
+
 
 if __name__ == "__main__":
     test_full()

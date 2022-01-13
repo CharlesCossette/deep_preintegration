@@ -162,3 +162,10 @@ def count_parameters(model):
     Counts the number of trainable parameters in a neural network.
     """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def init_weights(m):
+    if hasattr(m, "weight"):
+        torch.nn.init.uniform_(m.weight, -0.001, 0.001)
+    if hasattr(m, "bias"):
+        m.bias.data.fill_(0.001)
