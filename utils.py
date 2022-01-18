@@ -93,35 +93,6 @@ def trace_loss(C1, C2):
     return torch.sum(batchtrace(Id - DC)) / dim_batch
 
 
-def imu_dead_reckoning(t, r0, v0, C0, gyro, accel):
-    r = r0
-    v = v0
-    C = C0
-    g = torch.Tensor([0, 0, -9.80665]).view((-1, 1))
-    t_data = [torch.Tensor([0.0])]
-    r_data = [r]
-    v_data = [v]
-    C_data = [C]
-    for i in range(1, len(t)):
-        dt = t[i] - t[i - 1]
-        w = gyro[:, i - 1].view((-1, 1))
-        a = accel[:, i - 1].view((-1, 1))
-        r = r + v * dt + 0.5 * g * (dt ** 2) + 0.5 * C @ a * (dt ** 2)
-        v = v + g * dt + C @ a * dt
-        C = C @ SO3.Exp(dt * w).squeeze()
-
-        t_data.append(t[i])
-        r_data.append(r)
-        v_data.append(v)
-        C_data.append(C)
-
-    t_data = torch.hstack(t_data)
-    r_data = torch.hstack(r_data)
-    v_data = torch.hstack(v_data)
-    C_data = torch.stack(C_data, 0)
-    return {"t": t_data, "r": r_data, "v": v_data, "C": C_data}
-
-
 def unflatten_pose(x):
     """
     Decomposes an [N x 15] array into position, velocity, and rotation arrays.

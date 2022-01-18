@@ -1,9 +1,10 @@
-from model import RmiDataset, DeltaTransRmiNet, DeltaRotRmiNet
+from model import DeltaTransRmiNet, DeltaRotRmiNet
 from utils import count_parameters
 from losses import DeltaRotRmiLoss, DeltaTransRmiLoss
 from copy import deepcopy
 from torch.utils.data import DataLoader, ConcatDataset, Subset
 import torch
+from dataset import RmiDataset, add_noise
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -14,6 +15,7 @@ def train_loop(net, trainloader, optimizer, criterion, device="cpu"):
     for i, training_sample in enumerate(trainloader, 0):
         # Get minibatch raw data
         x_train, y_train = training_sample
+        #x_train = add_noise(x_train)
         x_train = x_train.to(device)
         y_train = y_train.to(device)
 
@@ -22,7 +24,7 @@ def train_loop(net, trainloader, optimizer, criterion, device="cpu"):
         loss = criterion(y_predict, y_train)
 
         # Perform an SGD step
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
         running_loss += loss.item()
@@ -85,13 +87,14 @@ def train(
     criterion = loss_fn
     criterion_valid = deepcopy(loss_fn)
 
-    # optimizer = torch.optim.SGD(net.parameters(), lr=0.05, weight_decay=1e-5)
-    optimizer = torch.optim.Adam(net.parameters(), lr=0.001, weight_decay=1e-2)
+    #optimizer = torch.optim.SGD(net.parameters(), lr=0.05, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(net.parameters(), lr=0.01, weight_decay=0)
 
     # Training
     # training_loss = valid_loop(net, trainloader, criterion, device)
 
     valid_loss = 0.0
+    best_valid_loss = 1e10
     for epoch in range(epochs):
 
         training_loss = train_loop(net, trainloader, optimizer, criterion, device)
@@ -125,6 +128,12 @@ def train(
         writer.flush()
 
         torch.save(net.state_dict(), "./results/" + output_file)
+
+        if valid_loss < best_valid_loss:
+            best_valid_loss = valid_loss
+            torch.save(net.state_dict(), "./results/best_" + output_file)
+            print("New lowest validation loss!")
+
     writer.close()
 
 
@@ -142,13 +151,15 @@ if __name__ == "__main__":
         RmiDataset("./data/processed/v2_01_easy.csv", N, stride, with_model),
         RmiDataset("./data/processed/v2_02_medium.csv", N, stride, with_model),
         RmiDataset("./data/processed/v2_03_difficult.csv", N, stride, with_model),
-        RmiDataset("./data/processed/v1_02_medium.csv", N, stride, with_model),
+        RmiDataset("./data/processed/mh_02_easy.csv", N, stride, with_model),
+        RmiDataset("./data/processed/mh_03_medium.csv", N, stride, with_model),
+        RmiDataset("./data/processed/mh_04_difficult.csv", N, stride, with_model),
     ]
 
     trainset_list = []
     validset_list = []
     for dataset in raw_datasets:
-        idx = dataset.get_index_of_time(50)
+        idx = dataset.get_index_of_time(80)
         trainset_list.append(Subset(dataset, list(range(idx))))
         validset_list.append(Subset(dataset, list(range(idx, len(dataset)))))
 

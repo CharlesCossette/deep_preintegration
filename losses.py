@@ -1,3 +1,4 @@
+from math import sqrt
 from pylie.torch import SO3
 from utils import unflatten_pose, flatten_pose
 import torch
@@ -133,13 +134,13 @@ def delta_trans_rmi_loss(y, y_train, with_info=False):
     y_gt = y_train[:, 0:15]
     y_meas = y_train[:, 15:]
     y_final = y + y_meas[:, 9:]
-    loss = mse_loss(y_final, y_gt[:, 9:])
+    loss = huber_loss(y_final, y_gt[:, 9:], delta=0.1)
 
     if with_info:
-        vel_rmse = torch.sqrt(mse_loss(y_final[:, 0:3], y_gt[:, 9:12]))
-        pos_rmse = torch.sqrt(mse_loss(y_final[:, 3:], y_gt[:, 12:]))
-        vel_meas_rmse = torch.sqrt(mse_loss(y_meas[:, 9:12], y_gt[:, 9:12]))
-        pos_meas_rmse = torch.sqrt(mse_loss(y_meas[:, 12:], y_gt[:, 12:]))
+        vel_rmse = mse_loss(y_final[:, 0:3], y_gt[:, 9:12], reduction="sum")
+        pos_rmse = mse_loss(y_final[:, 3:], y_gt[:, 12:], reduction="sum")
+        vel_meas_rmse = mse_loss(y_meas[:, 9:12], y_gt[:, 9:12], reduction="sum")
+        pos_meas_rmse = mse_loss(y_meas[:, 12:], y_gt[:, 12:], reduction="sum")
         return loss, {
             "v_loss": vel_rmse.item(),
             "r_loss": pos_rmse.item(),
@@ -156,6 +157,7 @@ class DeltaTransRmiLoss(CustomLoss):
         self.running_r_loss = 0.0
         self.running_v_loss_meas = 0.0
         self.running_r_loss_meas = 0.0
+        self.total_samples = 0
 
     def __call__(self, y1, y2):
         loss, info = delta_trans_rmi_loss(y1, y2, with_info=True)
@@ -163,24 +165,32 @@ class DeltaTransRmiLoss(CustomLoss):
         self.running_r_loss += info["r_loss"]
         self.running_v_loss_meas += info["v_loss_meas"]
         self.running_r_loss_meas += info["r_loss_meas"]
-
+        self.total_samples += y1.shape[0]
         return loss
 
     def write_info(self, writer: SummaryWriter, epoch, tag=""):
+        N = self.total_samples
         writer.add_scalars(
             "RMSE/Velocity/" + tag,
-            {tag: self.running_v_loss, "Model": self.running_v_loss_meas},
+            {
+                tag: sqrt(self.running_v_loss / N),
+                "Model": sqrt(self.running_v_loss_meas / N),
+            },
             epoch,
         )
         writer.add_scalars(
             "RMSE/Position/" + tag,
-            {tag: self.running_r_loss, "Model": self.running_r_loss_meas},
+            {
+                tag: sqrt(self.running_r_loss / N),
+                "Model": sqrt(self.running_r_loss_meas / N),
+            },
             epoch,
         )
         self.running_v_loss = 0.0
         self.running_r_loss = 0.0
         self.running_v_loss_meas = 0.0
         self.running_r_loss_meas = 0.0
+        self.total_samples = 0
 
 
 def delta_rot_rmi_loss(y, y_train, with_info=False):

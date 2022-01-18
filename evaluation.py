@@ -1,12 +1,48 @@
+from math import sqrt
+from zmq import VMCI_BUFFER_MAX_SIZE
 from model import (
     RmiDataset,
     get_gt_rmis,
     get_rmis,
 )
+from train import valid_loop
 from utils import unflatten_pose, flatten_pose
-from losses import pose_loss
+from losses import DeltaTransRmiLoss, delta_trans_rmi_loss, pose_loss
 import torch
+from torch.utils.data import DataLoader
 from pylie.torch import SO3
+
+
+def imu_dead_reckoning(filename):
+    g_a = torch.Tensor([0, 0, -9.80665]).reshape((-1, 1))
+    dataset = RmiDataset(filename, window_size=2, stride=1, use_cache=False)
+    _, _, poses = dataset.get_item_with_poses(0)
+    r, v, C = unflatten_pose(poses[0])
+    g = torch.Tensor([0, 0, -9.80665]).view((-1, 1))
+    t_data = [torch.Tensor([0.0])]
+    r_data = [r]
+    v_data = [v]
+    C_data = [C]
+    for x, _ in dataset:
+        t = x[0, :]
+        w = x[1:4, 0].reshape((-1, 1))
+        a = x[4:, 0].reshape((-1, 1))
+
+        dt = t[1] - t[0]
+        r = r + v * dt + 0.5 * g * (dt ** 2) + 0.5 * C @ a * (dt ** 2)
+        v = v + g * dt + C @ a * dt
+        C = C @ SO3.Exp(dt * w).squeeze()
+
+        t_data.append(t[1])
+        r_data.append(r)
+        v_data.append(v)
+        C_data.append(C)
+
+    t_data = torch.hstack(t_data)
+    r_data = torch.hstack(r_data)
+    v_data = torch.hstack(v_data)
+    C_data = torch.stack(C_data, 0)
+    return {"t": t_data, "r": r_data, "v": v_data, "C": C_data}
 
 
 def rminet_test(net, filename):
@@ -170,7 +206,9 @@ def seperated_nets_test(trans_net, rot_net, filename):
     g_a = torch.Tensor([0, 0, -9.80665]).reshape((-1, 1))
     N = trans_net._window_size
 
-    dataset = RmiDataset(filename, window_size=N, stride=N - 1, with_model=True)
+    dataset = RmiDataset(
+        filename, window_size=N, stride=N - 1, with_model=True, use_cache=False
+    )
     with torch.no_grad():
         trans_net.eval()
         rot_net.eval()
@@ -217,9 +255,9 @@ def seperated_nets_test(trans_net, rot_net, filename):
             )
 
             # Use RMIs to predict motion forward
-            C_j = C_i @ DC_gt
-            v_j = v_i + g_a * DT + C_i @ DV_meas
-            r_j = r_i + v_i * DT + 0.5 * g_a * (DT ** 2) + C_i @ DR_meas
+            C_j = C_i @ DC_meas
+            v_j = v_i + g_a * DT + C_i @ DV
+            r_j = r_i + v_i * DT + 0.5 * g_a * (DT ** 2) + C_i @ DR
             r_i = r_j
             v_i = v_j
             C_i = C_j
@@ -230,11 +268,11 @@ def seperated_nets_test(trans_net, rot_net, filename):
             C_data.append(C_j)
 
             net_loss = pose_loss(
-                flatten_pose(DR, DV, DC).unsqueeze(0),
+                flatten_pose(DR, DV, DC_gt).unsqueeze(0),
                 flatten_pose(DR_gt, DV_gt, DC_gt).unsqueeze(0),
             )
             model_loss = pose_loss(
-                flatten_pose(DR_meas, DV_meas, DC_meas).unsqueeze(0),
+                flatten_pose(DR_meas, DV_meas, DC_gt).unsqueeze(0),
                 flatten_pose(DR_gt, DV_gt, DC_gt).unsqueeze(0),
             )
             print("Net Loss: %.6f, Model Loss: %.6f" % (net_loss, model_loss))
@@ -255,3 +293,33 @@ def seperated_nets_test(trans_net, rot_net, filename):
             "v_gt": v_gt_data,
             "C_gt": C_gt_data,
         }
+
+
+def trans_net_violin(net, filename):
+    N = net._window_size
+    dataset = RmiDataset(filename, window_size=N, stride=20, with_model=True, use_cache=True)
+    loader = DataLoader(dataset, batch_size=1)
+    net.to("cpu")
+    net.eval()
+    r_rmse = []
+    v_rmse = []
+    r_meas_rmse = []
+    v_meas_rmse = []
+    with torch.no_grad():
+        for i, validation_sample in enumerate(loader, 0):
+            x, y = validation_sample
+
+            y_hat = net(x)
+            loss, info = delta_trans_rmi_loss(y_hat, y, with_info=True)
+            r_rmse.append(sqrt(info["r_loss"]/3))
+            r_meas_rmse.append(sqrt(info["r_loss_meas"]/3))
+            v_rmse.append(sqrt(info["v_loss"]/3))
+            v_meas_rmse.append(sqrt(info["v_loss_meas"]/3))
+
+    return torch.vstack([
+        torch.Tensor(r_rmse),
+        torch.Tensor(r_meas_rmse),
+        torch.Tensor(v_rmse),
+        torch.Tensor(v_meas_rmse)
+    ])
+    
