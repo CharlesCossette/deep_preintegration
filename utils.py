@@ -50,11 +50,12 @@ def load_processed_data(filename):
     # TODO: get rid of this function. merge with RmiDataset somehow.
     data = torch.Tensor(pd.read_csv(filename).values)
     t = data[:, 0]
+    N = t.shape[0]
     gyro = data[:, 1:4].T
     accel = data[:, 4:7].T
     r_zw_a_gt = data[:, 7:10].T
     v_zw_a_gt = data[:, 10:13].T
-    C_ab_gt = data[:, 13:].T
+    C_ab_gt = data[:, 13:].view((N, 3, 3))
     return {
         "timestamp": t,
         "accel": accel,
@@ -96,15 +97,15 @@ def imu_dead_reckoning(t, r0, v0, C0, gyro, accel):
     r = r0
     v = v0
     C = C0
-    g = torch.Tensor([0, 0, -9.80665]).reshape((-1, 1))
+    g = torch.Tensor([0, 0, -9.80665]).view((-1, 1))
     t_data = [torch.Tensor([0.0])]
     r_data = [r]
     v_data = [v]
     C_data = [C]
     for i in range(1, len(t)):
         dt = t[i] - t[i - 1]
-        w = gyro[:, i - 1].reshape((-1, 1))
-        a = accel[:, i - 1].reshape((-1, 1))
+        w = gyro[:, i - 1].view((-1, 1))
+        a = accel[:, i - 1].view((-1, 1))
         r = r + v * dt + 0.5 * g * (dt ** 2) + 0.5 * C @ a * (dt ** 2)
         v = v + g * dt + C @ a * dt
         C = C @ SO3.Exp(dt * w).squeeze()
@@ -117,6 +118,7 @@ def imu_dead_reckoning(t, r0, v0, C0, gyro, accel):
     t_data = torch.hstack(t_data)
     r_data = torch.hstack(r_data)
     v_data = torch.hstack(v_data)
+    C_data = torch.stack(C_data, 0)
     return {"t": t_data, "r": r_data, "v": v_data, "C": C_data}
 
 
@@ -169,3 +171,8 @@ def init_weights(m):
         torch.nn.init.uniform_(m.weight, -0.001, 0.001)
     if hasattr(m, "bias"):
         m.bias.data.fill_(0.001)
+
+
+def bmtm(mat1, mat2):
+    """batch matrix transpose matrix product"""
+    return torch.einsum("bji, bjk -> bik", mat1, mat2)

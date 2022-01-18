@@ -1,4 +1,3 @@
-from syslog import LOG_SYSLOG
 from pylie.torch import SO3
 from utils import unflatten_pose, flatten_pose
 import torch
@@ -139,7 +138,14 @@ def delta_trans_rmi_loss(y, y_train, with_info=False):
     if with_info:
         vel_rmse = torch.sqrt(mse_loss(y_final[:, 0:3], y_gt[:, 9:12]))
         pos_rmse = torch.sqrt(mse_loss(y_final[:, 3:], y_gt[:, 12:]))
-        return loss, {"v_loss": vel_rmse, "r_loss": pos_rmse}
+        vel_meas_rmse = torch.sqrt(mse_loss(y_meas[:, 9:12], y_gt[:, 9:12]))
+        pos_meas_rmse = torch.sqrt(mse_loss(y_meas[:, 12:], y_gt[:, 12:]))
+        return loss, {
+            "v_loss": vel_rmse.item(),
+            "r_loss": pos_rmse.item(),
+            "v_loss_meas": vel_meas_rmse.item(),
+            "r_loss_meas": pos_meas_rmse.item(),
+        }
 
     return loss
 
@@ -148,18 +154,33 @@ class DeltaTransRmiLoss(CustomLoss):
     def __init__(self):
         self.running_v_loss = 0.0
         self.running_r_loss = 0.0
+        self.running_v_loss_meas = 0.0
+        self.running_r_loss_meas = 0.0
 
     def __call__(self, y1, y2):
         loss, info = delta_trans_rmi_loss(y1, y2, with_info=True)
         self.running_v_loss += info["v_loss"]
         self.running_r_loss += info["r_loss"]
+        self.running_v_loss_meas += info["v_loss_meas"]
+        self.running_r_loss_meas += info["r_loss_meas"]
+
         return loss
 
     def write_info(self, writer: SummaryWriter, epoch, tag=""):
-        writer.add_scalar("Loss/Position/" + tag, self.running_r_loss, epoch)
-        writer.add_scalar("Loss/Velocity" + tag, self.running_v_loss, epoch)
+        writer.add_scalars(
+            "RMSE/Velocity/" + tag,
+            {tag: self.running_v_loss, "Model": self.running_v_loss_meas},
+            epoch,
+        )
+        writer.add_scalars(
+            "RMSE/Position/" + tag,
+            {tag: self.running_r_loss, "Model": self.running_r_loss_meas},
+            epoch,
+        )
         self.running_v_loss = 0.0
         self.running_r_loss = 0.0
+        self.running_v_loss_meas = 0.0
+        self.running_r_loss_meas = 0.0
 
 
 def delta_rot_rmi_loss(y, y_train, with_info=False):
@@ -185,14 +206,16 @@ def delta_rot_rmi_loss(y, y_train, with_info=False):
 
     e_phi = SO3.Log(torch.matmul(torch.transpose(DC_final, 1, 2), DC_gt))
 
-    mse = mse_loss(e_phi, torch.zeros(e_phi.shape))
-    scaled_loss = mse_loss(10 * e_phi, torch.zeros(e_phi.shape))
+    mse = mse_loss(e_phi, torch.zeros(e_phi.shape, device=y.device))
+    scaled_loss = mse_loss(e_phi, torch.zeros(e_phi.shape, device=y.device))
     if with_info:
         e_phi_meas = SO3.Log(torch.matmul(torch.transpose(DC_meas, 1, 2), DC_gt))
-        mse_meas = mse_loss(e_phi_meas, torch.zeros(e_phi_meas.shape))
+        mse_meas = mse_loss(
+            e_phi_meas, torch.zeros(e_phi_meas.shape, device=e_phi_meas.device)
+        )
         return scaled_loss, {
-            "C_loss": torch.sqrt(mse),
-            "C_loss_meas": torch.sqrt(mse_meas),
+            "C_loss": torch.sqrt(mse).item(),
+            "C_loss_meas": torch.sqrt(mse_meas).item(),
         }
 
     return scaled_loss
@@ -212,7 +235,7 @@ class DeltaRotRmiLoss(CustomLoss):
     def write_info(self, writer: SummaryWriter, epoch, tag=""):
         writer.add_scalars(
             "RMSE/Rotation/" + tag,
-            {"Training": self.running_C_loss, "Model": self.running_C_loss_meas},
+            {tag: self.running_C_loss, "Model": self.running_C_loss_meas},
             epoch,
         )
         self.running_C_loss = 0.0

@@ -1,10 +1,13 @@
 from math import floor
-from torch.utils.data import Dataset, DataLoader, ConcatDataset, random_split
+import os.path
+from torch.utils.data import Dataset
 import torch
 import pandas as pd
 from pylie.torch import SO3
-from utils import *
-from torch.utils.tensorboard import SummaryWriter
+from utils import flatten_pose
+import numpy as np
+
+# TODO: dataset memory leak
 
 
 class RmiDataset(Dataset):
@@ -34,45 +37,71 @@ class RmiDataset(Dataset):
         window_size=200,
         stride=1,
         with_model=False,
+        accel_bias=[0, 0, 0],
+        gyro_bias=None,
     ):
-        self._file = open(filename, "r")
-        self._df = pd.read_csv(filename, sep=",")
+        self._filename = filename
+        self._data = torch.Tensor(pd.read_csv(filename, sep=",").values)
+
+        if gyro_bias is None:
+            gyro_bias = torch.mean(self._data[:1000, 1:4], 0, keepdim=False)
+        else:
+            gyro_bias = torch.Tensor(gyro_bias)
+
+        accel_bias = torch.Tensor(accel_bias)
+        self._data[:, 1:4] -= gyro_bias
+        self._data[:, 4:7] -= accel_bias
 
         if window_size == "full":
-            window_size = len(self._df)
+            window_size = self._data.shape[0]
 
         self._window_size = window_size
         self._stride = stride
         self._with_model = with_model
         self._poses = None
-        self._quickloader = [None] * self.__len__()
-        pass
+        self._quickloader_valid = [False] * self.__len__()
+        self._is_cached = False
+        if with_model:
+            self._quickloader_y = torch.zeros((self.__len__(), 30))
+        else:
+            self._quickloader_y = torch.zeros((self.__len__(), 15))
+        self.load_cache()
 
     def __len__(self):
-        return floor((self._df.shape[0] - self._window_size) / self._stride) + 1
+        return floor((self._data.shape[0] - self._window_size) / self._stride) + 1
 
     def __getitem__(self, idx):
         # Get from quickloader if available, otherwise compute from scratch.
-        out = self._quickloader[idx]
-        if out is None:
-            out = self._compute_sample(idx)
-        return out
+        if self._quickloader_valid[idx]:
+            range_start = idx * self._stride
+            range_stop = range_start + self._window_size
+            x = self._data[range_start:range_stop, 0:7].T
+            y = self._quickloader_y[idx, :]
+        else:
+            x, y = self._compute_sample(idx)
+            self._quickloader_y[idx, :] = y
+            self._quickloader_valid[idx] = True
+
+        if not self._is_cached:
+            if all(self._quickloader_valid):
+                self.save_cache()
+                self._is_cached = True
+
+        return x, y
 
     def _compute_sample(self, idx):
         range_start = idx * self._stride
         range_stop = range_start + self._window_size
 
-        if range_stop > (self._df.shape[0] + 1):
+        if range_stop > (self._data.shape[0] + 1):
             raise RuntimeError("programming error")
 
         # Convert to Torch tensor.
-        sample_data = torch.Tensor(self._df.iloc[range_start:range_stop, :].values)
+        sample_data = self._data[range_start:range_stop, :]
 
         # Get network input: gyro and accel data.
         t_data = sample_data[:, 0]
-        gyro_data = sample_data[:, 1:4]
-        accel_data = sample_data[:, 4:7]
-        x = torch.vstack((t_data.T, gyro_data.T, accel_data.T))
+        x = self._data[range_start:range_stop, 0:7].T
 
         t_i = t_data[0]
         t_j = t_data[-1]
@@ -100,10 +129,6 @@ class RmiDataset(Dataset):
             flatten_pose(r_i, v_i, C_i),
             flatten_pose(r_j, v_j, C_j),
         ]
-
-        # Store this result in quickloader for easy access when this index is
-        # called again.
-        self._quickloader[idx] = (x, y)
         return x, y
 
     def get_item_with_poses(self, idx):
@@ -114,12 +139,76 @@ class RmiDataset(Dataset):
         x, y = self.__getitem__(idx)
         return x, y, self._poses
 
+    def get_index_of_time(self, t):
+        t_data = self._data[:, 0]
+        diff = torch.abs(t_data - t)
+        idx_data = torch.argmin(diff)
+        idx = ((idx_data / diff.shape[0]) * self.__len__()).int().item()
+        return idx
+
     def reset(self):
         """
         Clears the internal quickloader so that all samples must be computed
         from scratch.
         """
-        self._quickloader = [None] * self.__len__()
+        if self._with_model:
+            self._quickloader_y = torch.zeros((self.__len__(), 30))
+        else:
+            self._quickloader_y = torch.zeros((self.__len__(), 15))
+
+    def cache_filename(self):
+        name = self._filename.split("/")[-1]
+        name = name.split(".")[0]
+
+        cachefile = (
+            "./data/cache/"
+            + str(name)
+            + "_"
+            + str(self._window_size)
+            + "_"
+            + str(self._stride)
+            + "_"
+            + str(self._with_model)
+            + ".csv"
+        )
+        return cachefile
+
+    def save_cache(self):
+        cachefile = self.cache_filename()
+        pd.DataFrame(self._quickloader_y.numpy()).to_csv(
+            cachefile, header=False, index=False
+        )
+
+    def load_cache(self):
+        cachefile = self.cache_filename()
+        if os.path.isfile(cachefile):
+            self._is_cached = True
+            self._quickloader_valid = [True] * self.__len__()
+            self._quickloader_y = torch.Tensor(
+                pd.read_csv(cachefile, header=None).values
+            )
+
+
+class BaseNet(torch.nn.Module):
+    def __init__(self):
+        super(BaseNet, self).__init__()
+
+        # for normalizing inputs
+        self.mean_x = torch.Tensor(
+            [0.0458, 0.0114, -0.0163, 9.2852, 0.0166, -3.2451]
+        ).view((-1, 1))
+        self.std_x = torch.Tensor(
+            [0.4135, 0.3522, 0.2884, 1.4742, 0.6551, 0.8713]
+        ).view((-1, 1))
+        self.mean_x = torch.nn.Parameter(self.mean_x, requires_grad=False)
+        self.std_x = torch.nn.Parameter(self.std_x, requires_grad=False)
+
+    def norm(self, x):
+        return (x - self.mean_x) / self.std_x
+
+    def set_normalized_factors(self, mean_x, std_x):
+        self.mean_u = torch.nn.Parameter(mean_x, requires_grad=False)
+        self.std_u = torch.nn.Parameter(std_x, requires_grad=False)
 
 
 class RmiNet(torch.nn.Module):
@@ -200,7 +289,7 @@ class DeltaRmiNet(torch.nn.Module):
         return x
 
 
-class DeltaTransRmiNet(torch.nn.Module):
+class DeltaTransRmiNet(BaseNet):
     """
     Convolutional neural network based RMI corrector. The network outputs a
     "delta" which is then "added" to the analytical RMIs to produce the final
@@ -212,23 +301,48 @@ class DeltaTransRmiNet(torch.nn.Module):
         super(DeltaTransRmiNet, self).__init__()
 
         self.conv_layer = torch.nn.Sequential(
-            torch.nn.Conv1d(6, 32, 5, padding=4),
+            torch.nn.Conv1d(
+                6, 16, 7, padding="same", padding_mode="replicate", dilation=1
+            ),
+            # torch.nn.BatchNorm1d(16),
             torch.nn.GELU(),
-            torch.nn.Conv1d(32, 6, 5, padding=4, dilation=3),
+            torch.nn.Dropout(0.2),
+            torch.nn.Conv1d(
+                16, 32, 7, padding="same", padding_mode="replicate", dilation=4
+            ),
+            # torch.nn.BatchNorm1d(32),
             torch.nn.GELU(),
-            torch.nn.Flatten(),
+            torch.nn.Dropout(0.2),
+            torch.nn.Conv1d(
+                32, 64, 7, padding="same", padding_mode="replicate", dilation=16
+            ),
+            # torch.nn.BatchNorm1d(64),
+            torch.nn.GELU(),
+            torch.nn.Dropout(0.2),
+            torch.nn.Conv1d(
+                64, 128, 7, padding="same", padding_mode="replicate", dilation=64
+            ),
+            # torch.nn.BatchNorm1d(128),
+            torch.nn.GELU(),
+            torch.nn.Dropout(0.2),
+            torch.nn.Conv1d(
+                128, 6, 7, padding="same", padding_mode="replicate", dilation=1
+            ),
+            # torch.nn.BatchNorm1d(6),
+            torch.nn.GELU(),
         )
         self.linear_layer = torch.nn.Sequential(
-            torch.nn.LazyLinear(50),
-            torch.nn.GELU(),
-            torch.nn.Linear(50, 6),
+            # torch.nn.LazyLinear(30),
+            # torch.nn.GELU(),
+            # torch.nn.Dropout(0.2),
+            torch.nn.Linear(6, 6),
         )
 
     def forward(self, x: torch.Tensor):
-        x = x.detach().clone()
         x = x[:, 1:, :]
-        x[:, 3:6, :] /= 9.80665
+        x = self.norm(x)
         x = self.conv_layer(x)
+        x = torch.sum(x, dim=2)
         x = self.linear_layer(x)
         return x
 
@@ -243,18 +357,52 @@ class DeltaRotRmiNet(torch.nn.Module):
     def __init__(self, window_size=200):
         self._window_size = window_size
         super(DeltaRotRmiNet, self).__init__()
-
+        in_dim = 6
+        out_dim = 3
+        dropout = 0
+        momentum = 0.1
+        # channel dimension
+        c0 = 16
+        c1 = 2 * c0
+        c2 = 2 * c1
+        c3 = 2 * c2
+        # kernel dimension (odd number)
+        k0 = 7
+        k1 = 7
+        k2 = 7
+        k3 = 7
+        # dilation dimension
+        d0 = 4
+        d1 = 4
+        d2 = 4
+        # padding
+        p0 = (k0 - 1) + d0 * (k1 - 1) + d0 * d1 * (k2 - 1) + d0 * d1 * d2 * (k3 - 1)
+        # nets
         self.conv_layer = torch.nn.Sequential(
-            torch.nn.Conv1d(6, 32, 5, padding=4),
+            torch.nn.ReplicationPad1d((p0, 0)),  # padding at start
+            torch.nn.Conv1d(in_dim, c0, k0, dilation=1),
+            torch.nn.BatchNorm1d(c0, momentum=momentum),
             torch.nn.GELU(),
-            torch.nn.Conv1d(32, 6, 5, padding=4, dilation=3),
+            torch.nn.Dropout(dropout),
+            torch.nn.Conv1d(c0, c1, k1, dilation=d0),
+            torch.nn.BatchNorm1d(c1, momentum=momentum),
             torch.nn.GELU(),
-            torch.nn.Flatten(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Conv1d(c1, c2, k2, dilation=d0 * d1),
+            torch.nn.BatchNorm1d(c2, momentum=momentum),
+            torch.nn.GELU(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Conv1d(c2, c3, k3, dilation=d0 * d1 * d2),
+            torch.nn.BatchNorm1d(c3, momentum=momentum),
+            torch.nn.GELU(),
+            torch.nn.Dropout(dropout),
+            torch.nn.Conv1d(c3, out_dim, 1, dilation=1),
+            torch.nn.Flatten(),  # no padding at end
         )
         self.linear_layer = torch.nn.Sequential(
-            torch.nn.LazyLinear(50),
-            torch.nn.GELU(),
-            torch.nn.Linear(50, 3),
+            torch.nn.LazyLinear(3),
+            # torch.nn.GELU(),
+            # torch.nn.Linear(50, 3),
         )
 
     def forward(self, x: torch.Tensor):

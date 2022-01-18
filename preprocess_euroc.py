@@ -73,15 +73,15 @@ def preprocess_meas(imu_meas, gt_meas, time_offset=0.0):
 
     C_ab = C_ab.flatten()
 
-    processed = np.hstack((t, gyro - b_g, accel - b_a, r_zw_a, v_zw_a, C_ab))
+    processed = np.hstack((t, gyro - 0 * b_g, accel - 0 * b_a, r_zw_a, v_zw_a, C_ab))
     return processed
 
 
 if __name__ == "__main__":
-    # imu_file = "./data/raw/V1_01_easy/mav0/imu0/data.csv"
+    imu_file = "./data/raw/V1_01_easy/mav0/imu0/data.csv"
     # gt_file = "./data/raw/V1_01_easy/V1_01_easy_corrected_groundtruth.csv"
-    # # gt_file = "./data/raw/V1_01_easy/mav0/state_groundtruth_estimate0/data.csv"
-    # preprocess_data(imu_file, gt_file, "./data/processed/v1_01_easy.csv")
+    gt_file = "./data/raw/V1_01_easy/mav0/state_groundtruth_estimate0/data.csv"
+    preprocess_data(imu_file, gt_file, "./data/processed/v1_01_easy.csv")
 
     imu_file = "./data/raw/V1_02_medium/mav0/imu0/data.csv"
     gt_file = "./data/raw/V1_02_medium/mav0/state_groundtruth_estimate0/data.csv"
@@ -103,6 +103,6 @@ if __name__ == "__main__":
     gt_file = "./data/raw/V2_03_difficult/mav0/state_groundtruth_estimate0/data.csv"
     preprocess_data(imu_file, gt_file, "./data/processed/v2_03_difficult.csv")
 
-    # imu_file = "./data/raw/MH_01_easy/mav0/imu0/data.csv"
-    # gt_file = "./data/raw/MH_01_easy/mav0/state_groundtruth_estimate0/data.csv"
-    # preprocess_data(imu_file, gt_file, "./data/processed/mh_01_easy.csv")
+    imu_file = "./data/raw/MH_01_easy/mav0/imu0/data.csv"
+    gt_file = "./data/raw/MH_01_easy/mav0/state_groundtruth_estimate0/data.csv"
+    preprocess_data(imu_file, gt_file, "./data/processed/mh_01_easy.csv")

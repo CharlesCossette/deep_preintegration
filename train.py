@@ -1,20 +1,21 @@
-from model import *
-from utils import *
-from losses import *
+from model import RmiDataset, DeltaTransRmiNet, DeltaRotRmiNet
+from utils import count_parameters
+from losses import DeltaRotRmiLoss, DeltaTransRmiLoss
 from copy import deepcopy
-from math import floor
-from h11 import Data
-from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data import DataLoader, ConcatDataset, Subset
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
 
-def train_loop(net, trainloader, optimizer, criterion):
+def train_loop(net, trainloader, optimizer, criterion, device="cpu"):
     # Stochastic Mini-batches
     running_loss = 0.0
+    net.train()
     for i, training_sample in enumerate(trainloader, 0):
         # Get minibatch raw data
         x_train, y_train = training_sample
+        x_train = x_train.to(device)
+        y_train = y_train.to(device)
 
         # Use neural network to predict RMIs
         y_predict = net(x_train)
@@ -30,15 +31,20 @@ def train_loop(net, trainloader, optimizer, criterion):
     return running_loss
 
 
-def valid_loop(net, validloader, criterion):
+def valid_loop(net, validloader, criterion, device="cpu"):
     # Calculate validation loss
     running_vloss = 0.0
-    for i, validation_sample in enumerate(validloader, 0):
-        vx, vy = validation_sample
-        vpredict = net(vx)
-        vloss = criterion(vpredict, vy)
+    net.eval()
+    with torch.no_grad():
+        for i, validation_sample in enumerate(validloader, 0):
+            vx, vy = validation_sample
+            vx = vx.to(device)
+            vy = vy.to(device)
 
-        running_vloss += vloss
+            vpredict = net(vx)
+            vloss = criterion(vpredict, vy)
+
+            running_vloss += vloss
 
     running_vloss /= i + 1
     return running_vloss
@@ -53,42 +59,57 @@ def train(
     weights_file=None,
     output_file="rminet_weights.pth",
     loss_fn=torch.nn.MSELoss,
+    use_gpu=False,
 ):
+
     if weights_file is not None:
         filename = "./results/" + weights_file
         net.load_state_dict(torch.load(filename))
 
-    print("Using CPU for training.")
+    if torch.cuda.is_available() and use_gpu:
+        device = "cuda"
+        net.cuda()
+        print("Using GPU for training.")
+    else:
+        device = "cpu"
+        print("Using CPU for training.")
 
     writer = SummaryWriter(flush_secs=1)
     trainloader = DataLoader(
-        trainset, batch_size=batch_size, num_workers=0, shuffle=True
+        trainset, batch_size=batch_size, shuffle=True, drop_last=False
     )
 
     if validset is not None:
-        validloader = DataLoader(validset, batch_size=batch_size, num_workers=0)
+        validloader = DataLoader(validset, batch_size=batch_size)
 
     criterion = loss_fn
     criterion_valid = deepcopy(loss_fn)
 
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.001, weight_decay=0)
-    # optimizer = torch.optim.Adam(net.parameters())
+    # optimizer = torch.optim.SGD(net.parameters(), lr=0.05, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(net.parameters(), lr=0.001, weight_decay=1e-2)
 
     # Training
-    training_loss = valid_loop(net, trainloader, criterion)
-    print("Training Neural Network with " + str(count_parameters(net)) + " parameters.")
+    # training_loss = valid_loop(net, trainloader, criterion, device)
+
     valid_loss = 0.0
     for epoch in range(epochs):
 
-        training_loss = train_loop(net, trainloader, optimizer, criterion)
+        training_loss = train_loop(net, trainloader, optimizer, criterion, device)
 
         if hasattr(criterion, "write_info"):
             criterion.write_info(writer, epoch, "Training")
 
         if validset is not None:
-            valid_loss = valid_loop(net, validloader, criterion_valid)
+            valid_loss = valid_loop(net, validloader, criterion_valid, device)
             if hasattr(criterion_valid, "write_info"):
                 criterion_valid.write_info(writer, epoch, "Validation")
+
+        if epoch == 0:
+            print(
+                "Training Neural Network with "
+                + str(count_parameters(net))
+                + " parameters."
+            )
 
         print(
             "Epoch: %d, Running Loss: %.6f, Validation Loss: %.6f"
@@ -108,42 +129,31 @@ def train(
 
 
 if __name__ == "__main__":
-    N = 1000  # Window size
-    stride = 999
-    batch_size = 1
+    N = 500  # Window size
+    stride = 20
+    batch_size = 128
     epochs = 1000
     load_file = None
 
-    # net = RmiNet(window_size=N)
-    # trainset1 = RmiDataset("./data/processed/v1_01_easy.csv", N, stride)
-    # trainset2 = RmiDataset("./data/processed/v1_03_difficult.csv", N, stride)
-    # trainset3 = RmiDataset("./data/processed/v2_01_easy.csv", N, stride)
-    # trainset4 = RmiDataset("./data/processed/v2_02_medium.csv", N, stride)
-    # trainset5 = RmiDataset("./data/processed/v2_03_difficult.csv", N, stride)
-    # trainset = ConcatDataset([trainset1, trainset2, trainset3, trainset4, trainset5])
-    # validset = RmiDataset("./data/processed/v1_02_medium.csv", N, stride)
+    # torch.set_default_dtype(torch.float64)
+    with_model = True
+    raw_datasets = [
+        RmiDataset("./data/processed/v1_03_difficult.csv", N, stride, with_model),
+        RmiDataset("./data/processed/v2_01_easy.csv", N, stride, with_model),
+        RmiDataset("./data/processed/v2_02_medium.csv", N, stride, with_model),
+        RmiDataset("./data/processed/v2_03_difficult.csv", N, stride, with_model),
+        RmiDataset("./data/processed/v1_02_medium.csv", N, stride, with_model),
+    ]
 
-    #
-    # train(
-    #     net,
-    #     trainset=trainset1,
-    #     batch_size=batch_size,
-    #     epochs=epochs,
-    #     validset=validset,
-    #     compare_model=model,
-    #     output_file="rminet_weights.pt",
-    #     weights_file="rminet_weights.pt",
-    #     loss_fn=pose_loss
-    # )
+    trainset_list = []
+    validset_list = []
+    for dataset in raw_datasets:
+        idx = dataset.get_index_of_time(50)
+        trainset_list.append(Subset(dataset, list(range(idx))))
+        validset_list.append(Subset(dataset, list(range(idx, len(dataset)))))
 
-    torch.set_default_dtype(torch.float64)
-    trainset1 = RmiDataset("./data/processed/v1_01_easy.csv", N, stride, True)
-    trainset2 = RmiDataset("./data/processed/v1_03_difficult.csv", N, stride, True)
-    trainset3 = RmiDataset("./data/processed/v2_01_easy.csv", N, stride, True)
-    trainset4 = RmiDataset("./data/processed/v2_02_medium.csv", N, stride, True)
-    trainset5 = RmiDataset("./data/processed/v2_03_difficult.csv", N, stride, True)
-    trainset = ConcatDataset([trainset1, trainset2, trainset3, trainset4, trainset5])
-    validset = RmiDataset("./data/processed/v1_02_medium.csv", N, stride, True)
+    trainset = ConcatDataset(trainset_list)
+    validset = ConcatDataset(validset_list)
 
     # Evaluate Analytical Model
     # modelset = RmiDataset("./data/processed/v1_01_easy.csv", N, stride, False)
@@ -157,26 +167,27 @@ if __name__ == "__main__":
     # loss_fn = delta_rmi_loss
 
     """ Trans only"""
-    # net = DeltaTransRmiNet(window_size=N)
-    # loss_fn = DeltaTransRmiLoss()
+    net = DeltaTransRmiNet(window_size=N)
+    loss_fn = DeltaTransRmiLoss()
     # load_file = "dtransrminet_weights.pt"
-    # output_file = "dtransrminet_weights.pt"
+    output_file = "dtransrminet_weights.pt"
 
-    """ Rot only"""
-    net = DeltaRotRmiNet(window_size=N)
-    loss_fn = DeltaRotRmiLoss()
-    output_file = "drotrminet_weights.pt"
-    # load_file = output_file
+    # """ Rot only"""
+    # net = DeltaRotRmiNet(window_size=N)
+    # loss_fn = DeltaRotRmiLoss()
+    # output_file = "drotrminet_weights.pt"
+    # # load_file = output_file
 
     train(
         net,
-        trainset=trainset1,
+        trainset=trainset,
         batch_size=batch_size,
         epochs=epochs,
         validset=validset,
         output_file=output_file,
         weights_file=load_file,
         loss_fn=loss_fn,
+        use_gpu=True,
     )
     # print(" ANALYTICAL MODEL LOSS: " + str(model_loss))
 
