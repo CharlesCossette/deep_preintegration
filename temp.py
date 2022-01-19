@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import ConcatDataset, Subset
-from model import DeltaTransRmiNet, RmiDataset
+from model import DeltaTransRmiNet
+from dataset import RmiDataset
 
 N = 1  # Window size
 stride = 1

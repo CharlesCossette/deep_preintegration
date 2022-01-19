@@ -7,11 +7,12 @@ import torch
 from evaluation import seperated_nets_test, imu_dead_reckoning, trans_net_violin
 from pylie.torch import SO3
 import numpy as np
+
 sns.set_theme(context="paper")
 
 N = 500  # window size
 # torch.set_default_dtype(torch.float64)
-#test_file = "./data/processed/v1_03_difficult.csv"
+# test_file = "./data/processed/v1_03_difficult.csv"
 test_file = "./data/processed/v1_01_easy.csv"
 # data = load_processed_data(test_file)
 # t = data["timestamp"]

@@ -6,6 +6,7 @@ import pandas as pd
 from utils import flatten_pose
 from model import get_gt_rmis, get_rmis
 
+
 class RmiDataset(Dataset):
     """
     Generic dataset object that extracts RMIs from the IMU measurements over a
@@ -34,19 +35,47 @@ class RmiDataset(Dataset):
         stride=1,
         with_model=False,
         accel_bias=[0, 0, 0],
-        gyro_bias=None,
+        gyro_bias=[0, 0, 0],
         use_cache=True,
     ):
         self._filename = filename
-        self._data = torch.Tensor(pd.read_csv(filename, sep=",").values)
+        df = pd.read_csv(filename, sep=",")
+        self._data = torch.Tensor(
+            df[
+                [
+                    "t",
+                    "wx",
+                    "wy",
+                    "wz",
+                    "ax",
+                    "ay",
+                    "az",
+                    "px",
+                    "py",
+                    "pz",
+                    "vx",
+                    "vy",
+                    "vz",
+                    "c11",
+                    "c12",
+                    "c13",
+                    "c21",
+                    "c22",
+                    "c23",
+                    "c31",
+                    "c32",
+                    "c33",
+                ]
+            ].values
+        )
 
-        if gyro_bias is None:
+        if gyro_bias == "auto":
             gyro_bias = torch.mean(self._data[:1000, 1:4], 0, keepdim=False)
         else:
             gyro_bias = torch.Tensor(gyro_bias)
+        self._data[:, 1:4] -= gyro_bias
 
         accel_bias = torch.Tensor(accel_bias)
-        self._data[:, 1:4] -= gyro_bias
         self._data[:, 4:7] -= accel_bias
 
         if window_size == "full":
@@ -187,10 +216,11 @@ class RmiDataset(Dataset):
             self._quickloader_y = torch.Tensor(
                 pd.read_csv(cachefile, header=None).values
             )
-            
+
+
 def add_noise(x):
     """Add Gaussian noise and bias to input"""
-    imu = x[:,1:,:]
+    imu = x[:, 1:, :]
 
     # noise density
     imu_std = torch.Tensor([8e-5, 1e-3], device=x.device)
@@ -199,7 +229,7 @@ def add_noise(x):
     # uni = torch.distributions.uniform.Uniform(-torch.ones(1),
     #     torch.ones(1))
 
-    noise = torch.randn_like(imu, device = x.device)
+    noise = torch.randn_like(imu, device=x.device)
     noise[:, :3, :] = noise[:, :3, :] * imu_std[0]
     noise[:, 3:6, :] = noise[:, 3:6, :] * imu_std[1]
 
@@ -207,5 +237,5 @@ def add_noise(x):
     # b0 = self.uni.sample(x[:, 0].shape).to(x.device)
     # b0[:, :3, :] = b0[:,:3,:] * self.imu_b0[0]
     # b0[:, 3:6, :] =  b0[:, 3:6,:] * self.imu_b0[1]
-    x[:,1:,:] = imu + noise
+    x[:, 1:, :] = imu + noise
     return x

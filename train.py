@@ -1,6 +1,6 @@
-from model import DeltaTransRmiNet, DeltaRotRmiNet
+from model import DeltaTransRmiNet, DeltaRotRmiNet, RmiModel
 from utils import count_parameters
-from losses import DeltaRotRmiLoss, DeltaTransRmiLoss
+from losses import DeltaRotRmiLoss, DeltaTransRmiLoss, PoseLoss
 from copy import deepcopy
 from torch.utils.data import DataLoader, ConcatDataset, Subset
 import torch
@@ -22,6 +22,8 @@ def train_loop(net, trainloader, optimizer, criterion, device="cpu"):
         # Use neural network to predict RMIs
         y_predict = net(x_train)
         loss = criterion(y_predict, y_train)
+        print(net.calib_mat)
+        print(net.bias)
 
         # Perform an SGD step
         optimizer.zero_grad(set_to_none=True)
@@ -60,8 +62,10 @@ def train(
     validset=None,
     weights_file=None,
     output_file="rminet_weights.pth",
-    loss_fn=torch.nn.MSELoss,
+    loss_fn=torch.nn.MSELoss(),
     use_gpu=False,
+    lr=0.01,
+    weight_decay=1e-5,
 ):
 
     if weights_file is not None:
@@ -87,17 +91,20 @@ def train(
     criterion = loss_fn
     criterion_valid = deepcopy(loss_fn)
 
-    #optimizer = torch.optim.SGD(net.parameters(), lr=0.05, weight_decay=1e-5)
-    optimizer = torch.optim.Adam(net.parameters(), lr=0.01, weight_decay=0)
+    # optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+    #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=100, T_mult=2, eta_min=1e-4)
+    scheduler = None
 
     # Training
-    # training_loss = valid_loop(net, trainloader, criterion, device)
-
     valid_loss = 0.0
     best_valid_loss = 1e10
     for epoch in range(epochs):
 
         training_loss = train_loop(net, trainloader, optimizer, criterion, device)
+
+        if scheduler is not None:
+            scheduler.step(epoch)
 
         if hasattr(criterion, "write_info"):
             criterion.write_info(writer, epoch, "Training")
@@ -138,14 +145,50 @@ def train(
 
 
 if __name__ == "__main__":
-    N = 500  # Window size
-    stride = 20
+    N = 50  # Window size
+    stride = 50
     batch_size = 128
     epochs = 1000
     load_file = None
 
+    d = torch.load("./results/calibration.pt")
+    print(d)
     # torch.set_default_dtype(torch.float64)
-    with_model = True
+   
+
+    # Evaluate Analytical Model
+    # modelset = RmiDataset("./data/processed/v1_01_easy.csv", N, stride, False)
+    # modelloader = DataLoader(modelset, batch_size=batch_size)
+    # model = RmiModel()
+    # model_loss = valid_loop(model, modelloader, pose_loss)
+    # print(" ANALYTICAL MODEL LOSS: " + str(model_loss))
+
+    """ Joint trans/rot. """
+    # net = DeltaRmiNet(window_size=N)
+    # loss_fn = delta_rmi_loss
+
+    """ Calibration"""
+    net = RmiModel()
+    loss_fn = PoseLoss()
+    load_file = "calibration.pt"
+    output_file = "calibration.pt"
+    with_model = False
+    lr = 0.0001
+
+    """ Trans only"""
+    # net = DeltaTransRmiNet(window_size=N)
+    # loss_fn = DeltaTransRmiLoss()
+    # # load_file = "dtransrminet_weights.pt"
+    # output_file = "dtransrminet_weights.pt"
+    # with_model = True
+
+    # """ Rot only"""
+    # net = DeltaRotRmiNet(window_size=N)
+    # loss_fn = DeltaRotRmiLoss()
+    # output_file = "drotrminet_weights.pt"
+    # # load_file = output_file
+    # with_model = True
+    
     raw_datasets = [
         RmiDataset("./data/processed/v1_03_difficult.csv", N, stride, with_model),
         RmiDataset("./data/processed/v2_01_easy.csv", N, stride, with_model),
@@ -166,29 +209,6 @@ if __name__ == "__main__":
     trainset = ConcatDataset(trainset_list)
     validset = ConcatDataset(validset_list)
 
-    # Evaluate Analytical Model
-    # modelset = RmiDataset("./data/processed/v1_01_easy.csv", N, stride, False)
-    # modelloader = DataLoader(modelset, batch_size=batch_size)
-    # model = RmiModel()
-    # model_loss = valid_loop(model, modelloader, pose_loss)
-    # print(" ANALYTICAL MODEL LOSS: " + str(model_loss))
-
-    """ Joint trans/rot. """
-    # net = DeltaRmiNet(window_size=N)
-    # loss_fn = delta_rmi_loss
-
-    """ Trans only"""
-    net = DeltaTransRmiNet(window_size=N)
-    loss_fn = DeltaTransRmiLoss()
-    # load_file = "dtransrminet_weights.pt"
-    output_file = "dtransrminet_weights.pt"
-
-    # """ Rot only"""
-    # net = DeltaRotRmiNet(window_size=N)
-    # loss_fn = DeltaRotRmiLoss()
-    # output_file = "drotrminet_weights.pt"
-    # # load_file = output_file
-
     train(
         net,
         trainset=trainset,
@@ -197,6 +217,7 @@ if __name__ == "__main__":
         validset=validset,
         output_file=output_file,
         weights_file=load_file,
+        lr = lr,
         loss_fn=loss_fn,
         use_gpu=True,
     )

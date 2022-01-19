@@ -5,7 +5,7 @@ sys.path.append(
     os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir))
 )
 
-from model import RmiDataset
+from dataset import RmiDataset
 import pandas as pd
 import torch
 

@@ -118,13 +118,24 @@ def flatten_pose(r, v, C):
     """
     Takes [3 x 1] position, [3 x 1] velocity, and [3 x 3] rotation arrays and
     flattens + stacks them all into a [1 x 15] array.
-
-    TODO: accept batch
     """
+    is_batch = False
+    if len(C.shape) == 3:
+        is_batch = True
 
     if isinstance(r, np.ndarray):
         return np.hstack((C.flatten(), v.flatten(), r.flatten()))
     elif isinstance(r, torch.Tensor):
+        if is_batch:
+            dim_batch = C.shape[0]
+            return torch.hstack(
+                [
+                    C.reshape((dim_batch, -1)),
+                    v.reshape((dim_batch, -1)),
+                    r.reshape((dim_batch, -1)),
+                ]
+            )
+
         return torch.hstack((C.flatten(), v.flatten(), r.flatten()))
     else:
         raise RuntimeError("Not an accepted variable type.")
@@ -144,6 +155,26 @@ def init_weights(m):
         m.bias.data.fill_(0.001)
 
 
+def bmv(mat, vec):
+    """batch matrix vector product"""
+    return torch.einsum("bij, bj -> bi", mat, vec)
+
+
+def bbmv(mat, vec):
+    """double batch matrix vector product"""
+    return torch.einsum("baij, baj -> bai", mat, vec)
+
+
+def bmtv(mat, vec):
+    """batch matrix transpose vector product"""
+    return torch.einsum("bji, bj -> bi", mat, vec)
+
+
 def bmtm(mat1, mat2):
     """batch matrix transpose matrix product"""
     return torch.einsum("bji, bjk -> bik", mat1, mat2)
+
+
+def bmmt(mat1, mat2):
+    """batch matrix matrix transpose product"""
+    return torch.einsum("bij, bkj -> bik", mat1, mat2)

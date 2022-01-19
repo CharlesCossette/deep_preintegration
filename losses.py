@@ -35,13 +35,19 @@ def pose_loss(y, y_gt, with_info=False):
     # Optionally, return the component-wise loss as an info dictionary.
     if with_info:
         info = {
-            "C_loss": torch.sqrt(mse_loss(e_phi, torch.zeros(e_phi.shape))),
-            "v_loss": torch.sqrt(mse_loss(e_v, torch.zeros(e_v.shape))),
-            "r_loss": torch.sqrt(mse_loss(e_r, torch.zeros(e_r.shape))),
+            "C_loss": mse_loss(
+                e_phi, torch.zeros(e_phi.shape, device=y.device), reduction="sum"
+            ).item(),
+            "v_loss": mse_loss(
+                e_v, torch.zeros(e_v.shape, device=y.device), reduction="sum"
+            ).item(),
+            "r_loss": mse_loss(
+                e_r, torch.zeros(e_r.shape, device=y.device), reduction="sum"
+            ).item(),
         }
-        return mse_loss(e, torch.zeros(e.shape)), info
+        return mse_loss(e, torch.zeros(e.shape, device=y.device)), info
 
-    return mse_loss(e, torch.zeros(e.shape))
+    return mse_loss(e, torch.zeros(e.shape, device=y.device))
 
 
 class PoseLoss(CustomLoss):
@@ -49,21 +55,25 @@ class PoseLoss(CustomLoss):
         self.running_C_loss = 0.0
         self.running_v_loss = 0.0
         self.running_r_loss = 0.0
+        self.total_samples = 0
 
     def __call__(self, y1, y2):
         loss, info = pose_loss(y1, y2, with_info=True)
         self.running_C_loss += info["C_loss"]
         self.running_v_loss += info["v_loss"]
         self.running_r_loss += info["r_loss"]
+        self.total_samples += 3*y1.shape[0]
         return loss
 
     def write_info(self, writer: SummaryWriter, epoch, tag=""):
-        writer.add_scalar("Loss/Position" + tag, self.running_r_loss, epoch)
-        writer.add_scalar("Loss/Velocity" + tag, self.running_v_loss, epoch)
-        writer.add_scalar("Loss/Rotation" + tag, self.running_C_loss, epoch)
+        N = self.total_samples
+        writer.add_scalar("RMSE/Position/" + tag, sqrt(self.running_r_loss/N), epoch)
+        writer.add_scalar("RMSE/Velocity/" + tag, sqrt(self.running_v_loss/N), epoch)
+        writer.add_scalar("RMSE/Rotation/" + tag, sqrt(self.running_C_loss/N), epoch)
         self.running_C_loss = 0.0
         self.running_v_loss = 0.0
         self.running_r_loss = 0.0
+        self.total_samples = 0
 
 
 def delta_rmi_loss(y, y_train, with_info=False):
@@ -165,7 +175,7 @@ class DeltaTransRmiLoss(CustomLoss):
         self.running_r_loss += info["r_loss"]
         self.running_v_loss_meas += info["v_loss_meas"]
         self.running_r_loss_meas += info["r_loss_meas"]
-        self.total_samples += y1.shape[0]
+        self.total_samples += 3*y1.shape[0]
         return loss
 
     def write_info(self, writer: SummaryWriter, epoch, tag=""):

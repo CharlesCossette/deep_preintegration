@@ -1,7 +1,5 @@
 from math import sqrt
-from zmq import VMCI_BUFFER_MAX_SIZE
 from model import (
-    RmiDataset,
     get_gt_rmis,
     get_rmis,
 )
@@ -11,6 +9,7 @@ from losses import DeltaTransRmiLoss, delta_trans_rmi_loss, pose_loss
 import torch
 from torch.utils.data import DataLoader
 from pylie.torch import SO3
+from dataset import RmiDataset
 
 
 def imu_dead_reckoning(filename):
@@ -297,7 +296,9 @@ def seperated_nets_test(trans_net, rot_net, filename):
 
 def trans_net_violin(net, filename):
     N = net._window_size
-    dataset = RmiDataset(filename, window_size=N, stride=20, with_model=True, use_cache=True)
+    dataset = RmiDataset(
+        filename, window_size=N, stride=20, with_model=True, use_cache=True
+    )
     loader = DataLoader(dataset, batch_size=1)
     net.to("cpu")
     net.eval()
@@ -311,15 +312,16 @@ def trans_net_violin(net, filename):
 
             y_hat = net(x)
             loss, info = delta_trans_rmi_loss(y_hat, y, with_info=True)
-            r_rmse.append(sqrt(info["r_loss"]/3))
-            r_meas_rmse.append(sqrt(info["r_loss_meas"]/3))
-            v_rmse.append(sqrt(info["v_loss"]/3))
-            v_meas_rmse.append(sqrt(info["v_loss_meas"]/3))
+            r_rmse.append(sqrt(info["r_loss"] / 3))
+            r_meas_rmse.append(sqrt(info["r_loss_meas"] / 3))
+            v_rmse.append(sqrt(info["v_loss"] / 3))
+            v_meas_rmse.append(sqrt(info["v_loss_meas"] / 3))
 
-    return torch.vstack([
-        torch.Tensor(r_rmse),
-        torch.Tensor(r_meas_rmse),
-        torch.Tensor(v_rmse),
-        torch.Tensor(v_meas_rmse)
-    ])
-    
+    return torch.vstack(
+        [
+            torch.Tensor(r_rmse),
+            torch.Tensor(r_meas_rmse),
+            torch.Tensor(v_rmse),
+            torch.Tensor(v_meas_rmse),
+        ]
+    )
