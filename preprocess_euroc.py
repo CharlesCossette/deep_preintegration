@@ -14,6 +14,12 @@ def preprocess_data(imu_file, gt_file, output_file):
     imu_data.columns = imu_data.columns.str.strip()
     gt_data.columns = gt_data.columns.str.strip()
 
+    # Start time is the later of the two starts
+    t_start = max(imu_data.iloc[0, 0], gt_data.iloc[0, 0])
+    # End time is the earlier of the two ends
+    t_end = min(imu_data.iloc[-1, 0], gt_data.iloc[-1, 0])
+
+
     df = pd.merge_asof(
         imu_data,
         gt_data,
@@ -49,6 +55,11 @@ def preprocess_data(imu_file, gt_file, output_file):
         }
     )
 
+    # Get only the data which has both IMU and groundtruth.
+    mask = df["t"].between(t_start, t_end)
+    df = df.loc[mask, :].reset_index(drop=True)
+
+
     df["t"] = df["t"] - df.loc[0, "t"]
     df["t"] *= 1e-9
 
@@ -65,7 +76,7 @@ def preprocess_data(imu_file, gt_file, output_file):
         dcm_data.append(C_ab)
     df_dcm = pd.DataFrame(dcm_data, columns=column_names)
     df = pd.concat([df, df_dcm], axis=1)
-    df.to_csv(output_file, index=None)
+    df.to_csv(output_file, index=False)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,14 @@
 from math import floor
 import os.path
-from torch.utils.data import Dataset
+from h11 import Data
+from torch.utils.data import Dataset, DataLoader
 import torch
 import pandas as pd
-from utils import flatten_pose
+from utils import flatten_pose, unflatten_pose
+from pylie.torch import SO3
 from model import get_gt_rmis, get_rmis
 
+# TODO: trim the ends
 
 class RmiDataset(Dataset):
     """
@@ -36,7 +39,8 @@ class RmiDataset(Dataset):
         with_model=False,
         accel_bias=[0, 0, 0],
         gyro_bias=[0, 0, 0],
-        use_cache=True,
+        use_cache=False,
+        output_window = "same"
     ):
         self._filename = filename
         df = pd.read_csv(filename, sep=",")
@@ -73,6 +77,7 @@ class RmiDataset(Dataset):
             gyro_bias = torch.mean(self._data[:1000, 1:4], 0, keepdim=False)
         else:
             gyro_bias = torch.Tensor(gyro_bias)
+
         self._data[:, 1:4] -= gyro_bias
 
         accel_bias = torch.Tensor(accel_bias)
@@ -87,6 +92,12 @@ class RmiDataset(Dataset):
         self._poses = None
         self._quickloader_valid = [False] * self.__len__()
         self._is_cached = False
+
+        if output_window == "same":
+            self._output_window = self._window_size
+        else:
+            self._output_window = output_window
+
         if with_model:
             self._quickloader_y = torch.zeros((self.__len__(), 30))
         else:
@@ -124,13 +135,14 @@ class RmiDataset(Dataset):
         if range_stop > (self._data.shape[0] + 1):
             raise RuntimeError("programming error")
 
-        # Convert to Torch tensor.
-        sample_data = self._data[range_start:range_stop, :]
-
         # Get network input: gyro and accel data.
-        t_data = sample_data[:, 0]
         x = self._data[range_start:range_stop, 0:7].T
 
+
+        # Convert to Torch tensor.
+        sample_data = self._data[range_stop - self._output_window:range_stop, :]
+
+        t_data = sample_data[:, 0]
         t_i = t_data[0]
         t_j = t_data[-1]
         DT = t_j - t_i
@@ -239,3 +251,35 @@ def add_noise(x):
     # b0[:, 3:6, :] =  b0[:, 3:6,:] * self.imu_b0[1]
     x[:, 1:, :] = imu + noise
     return x
+
+class DeltaRmiDataset(Dataset):
+    # TODO: test this properly
+    def __init__(self, rmi_dataset, rmi_model, position=True, velocity=True, attitude=True):
+        with torch.no_grad():
+            rmi_model.eval()
+            loader = DataLoader(rmi_dataset, batch_size=len(rmi_dataset))
+            x, y_gt = next(iter(loader))
+            y = rmi_model(x)
+
+            DR, DV, DC = unflatten_pose(y)
+            DR_gt, DV_gt, DC_gt = unflatten_pose(y_gt)
+
+            e_phi = SO3.Log(torch.matmul(torch.transpose(DC, 1, 2), DC_gt))
+            e_v = DV - DV_gt 
+            e_r = DR - DR_gt
+
+            e = []
+            if attitude:
+                e.append(e_phi)
+            if velocity:
+                e.append(e_v)
+            if position:
+                e.append(e_r)
+
+            self.e = torch.cat(e, dim=1)
+            self.x = x 
+    def __len__(self):
+        return self.x.shape[0]
+
+    def __getitem__(self, idx):
+        return self.x[idx,...], self.e[idx,...]

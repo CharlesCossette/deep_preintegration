@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 
 
 def test_rmis():
-    # torch.set_default_dtype(torch.float64)
+    torch.set_default_dtype(torch.float64)
     g = torch.Tensor([0, 0, -9.80665]).view((-1, 1))
     filename = "./data/processed/v1_01_easy.csv"
     data = RmiDataset(filename, window_size="full", use_cache=False)
@@ -83,4 +83,4 @@ def test_rmi_batch():
 
 
 if __name__ == "__main__":
-    test_rmi_batch()
+    test_rmis()

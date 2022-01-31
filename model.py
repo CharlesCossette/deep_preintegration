@@ -1,3 +1,4 @@
+from tkinter import Y
 import torch
 from pylie.torch import SO3
 from utils import flatten_pose, bmv
@@ -25,16 +26,31 @@ class BaseNet(torch.nn.Module):
         self.mean_x = torch.nn.Parameter(self.mean_x, requires_grad=False)
         self.std_x = torch.nn.Parameter(self.std_x, requires_grad=False)
         self.I = torch.nn.Parameter(torch.eye(6), requires_grad=False)
+        self.calib_mat = torch.nn.Parameter(0.05 * torch.randn((6, 6)))
+        self.bias = torch.nn.Parameter(0.01 * torch.randn((6, 1)))
 
     def norm(self, x):
         return (x - self.mean_x) / self.std_x
+    
+    def calibrate(self, x):
+        M = (self.I + self.calib_mat).expand((x.shape[0], 6, 6))
+        return torch.matmul(M, x) + self.bias
 
-    def set_normalized_factors(self, mean_x, std_x):
-        self.mean_u = torch.nn.Parameter(mean_x, requires_grad=False)
-        self.std_u = torch.nn.Parameter(std_x, requires_grad=False)
+    def set_normalized_factors(self, mean_x, std_x, requires_grad=False):
+        self.mean_u = torch.nn.Parameter(mean_x, requires_grad=requires_grad)
+        self.std_u = torch.nn.Parameter(std_x, requires_grad=requires_grad)
+
+    def set_calibration(self, mat = None, bias = None, requires_grad=False):
+        if mat is None:
+            mat = torch.zeros((6,6))
+        if bias is None:
+            bias = torch.zeros((6,1))
+
+        self.calib_mat = torch.nn.Parameter(mat, requires_grad=requires_grad)
+        self.bias = torch.nn.Parameter(bias.view((6,1)), requires_grad=requires_grad)
 
 
-class RmiNet(torch.nn.Module):
+class RmiNet(BaseNet):
     """
     Convolutional neural network based DIRECT RMI estimator.
     """
@@ -63,15 +79,16 @@ class RmiNet(torch.nn.Module):
         )
 
     def forward(self, x: torch.Tensor):
-        x = x.detach().clone()
-        x[:, 3:6, :] /= 9.80665
-        x = self.conv_layer(x)
-        x = self.linear_layer(x)
+        imu = x[:, 1:, :]
+        M = (self.I + self.calib_mat).expand((x.shape[0], 6, 6))
+        x = torch.matmul(M, imu) + self.bias
+        x = self.conv_layer(self.norm(x))
+        x = self.linear_layer(x) * 100
 
         # Normalize the rotation matrix to make it a valid element of SO(3)
         R = torch.reshape(x[:, 0:9], (x.shape[0], 3, 3))
         U, _, VT = torch.linalg.svd(R)
-        S = torch.eye(3).reshape((1, 3, 3)).repeat(x.shape[0], 1, 1)
+        S = torch.eye(3, device=x.device).reshape((1, 3, 3)).repeat(x.shape[0], 1, 1)
         S[:, 2, 2] = torch.det(torch.matmul(U, VT))
         R_norm = torch.matmul(U, torch.matmul(S, VT))
         R_flat = torch.reshape(R_norm, (x.shape[0], 9))
@@ -79,156 +96,45 @@ class RmiNet(torch.nn.Module):
         return torch.cat((R_flat, x[:, 9:]), 1)
 
 
-class DeltaTransRmiNet(BaseNet):
+class RmiNet2(BaseNet):
     """
     Convolutional neural network based RMI corrector. The network outputs a
     "delta" which is then "added" to the analytical RMIs to produce the final
     estimate.
     """
 
-    def __init__(self, window_size=200):
+    def __init__(self, window_size=200, output_std_dev =  torch.Tensor([1])):
         self._window_size = window_size
-        super(DeltaTransRmiNet, self).__init__()
+        super(RmiNet2, self).__init__()
 
         self.conv_layer = torch.nn.Sequential(
-            torch.nn.Conv1d(
-                6,
-                16,
-                7,
-                padding="same",
-                padding_mode="replicate",
-                dilation=1,
-                bias=False,
-            ),
-            torch.nn.BatchNorm1d(16),
+            torch.nn.Conv1d(6,12,7,1, padding= "same", padding_mode="replicate"),
             torch.nn.GELU(),
-            torch.nn.Dropout(0.5),
-            torch.nn.Conv1d(
-                16,
-                32,
-                7,
-                padding="same",
-                padding_mode="replicate",
-                dilation=16,
-                bias=False,
-            ),
-            torch.nn.BatchNorm1d(32),
+            torch.nn.Dropout(0.25),
+            torch.nn.Conv1d(12,18,7,1,dilation=4,padding= "same",  padding_mode="replicate"),
             torch.nn.GELU(),
-            torch.nn.Dropout(0.5),
-            torch.nn.Conv1d(
-                32,
-                64,
-                7,
-                padding="same",
-                padding_mode="replicate",
-                dilation=64,
-                bias=False,
-            ),
-            torch.nn.BatchNorm1d(64),
-            torch.nn.GELU(),
-            torch.nn.Dropout(0.5),
-            # torch.nn.Conv1d(
-            #     64,
-            #     128,
-            #     7,
-            #     padding="same",
-            #     padding_mode="replicate",
-            #     dilation=64,
-            #     bias=False,
-            # ),
-            # torch.nn.BatchNorm1d(128),
-            # torch.nn.GELU(),
-            # torch.nn.Dropout(0.2),
-            torch.nn.Conv1d(
-                64, 6, 7, padding="same", padding_mode="replicate", dilation=1
-            ),
+            torch.nn.Dropout(0.25),
+            torch.nn.Conv1d(18,24,7,1,dilation=16,padding= "same",  padding_mode="replicate"),
             torch.nn.GELU(),
             torch.nn.Dropout(0.2),
+            torch.nn.Conv1d(24,3,7,1,dilation=32,padding= "same",  padding_mode="replicate"),
+            torch.nn.Dropout(0.2)
         )
-        self.linear_layer = torch.nn.Sequential(
-            # torch.nn.LazyLinear(30),
-            # torch.nn.GELU(),
-            # torch.nn.Dropout(0.2),
-            torch.nn.Linear(6, 6),
-        )
-        self.calib_mat = torch.nn.Parameter(0.05 * torch.randn((6, 6)))
+        # self.linear_layer = torch.nn.Sequential(
+        #     torch.nn.LazyLinear(10),
+        #     torch.nn.GELU(),
+        #     torch.nn.Dropout(0.1),
+        #     torch.nn.Linear(10, 3),
+        # )
+        self._output_std_dev = torch.nn.Parameter(output_std_dev, requires_grad=False)
 
     def forward(self, x: torch.Tensor):
-        x = x[:, 1:, :]
-        # x = self.norm(x)
-        M = (self.I + self.calib_mat).expand((x.shape[0], 6, 6))
-        x = torch.matmul(M, x)
-        x = self.conv_layer(x)
-        x = torch.mean(x, dim=2)
-        x = self.linear_layer(x)
-        return x
-
-
-class DeltaRotRmiNet(torch.nn.Module):
-    """
-    Convolutional neural network based RMI corrector. The network outputs a
-    "delta" which is then "added" to the analytical RMIs to produce the final
-    estimate.
-    """
-
-    def __init__(self, window_size=200):
-        self._window_size = window_size
-        super(DeltaRotRmiNet, self).__init__()
-        in_dim = 6
-        out_dim = 3
-        dropout = 0
-        momentum = 0.1
-        # channel dimension
-        c0 = 16
-        c1 = 2 * c0
-        c2 = 2 * c1
-        c3 = 2 * c2
-        # kernel dimension (odd number)
-        k0 = 7
-        k1 = 7
-        k2 = 7
-        k3 = 7
-        # dilation dimension
-        d0 = 4
-        d1 = 4
-        d2 = 4
-        # padding
-        p0 = (k0 - 1) + d0 * (k1 - 1) + d0 * d1 * (k2 - 1) + d0 * d1 * d2 * (k3 - 1)
-        # nets
-        self.conv_layer = torch.nn.Sequential(
-            torch.nn.ReplicationPad1d((p0, 0)),  # padding at start
-            torch.nn.Conv1d(in_dim, c0, k0, dilation=1),
-            torch.nn.BatchNorm1d(c0, momentum=momentum),
-            torch.nn.GELU(),
-            torch.nn.Dropout(dropout),
-            torch.nn.Conv1d(c0, c1, k1, dilation=d0),
-            torch.nn.BatchNorm1d(c1, momentum=momentum),
-            torch.nn.GELU(),
-            torch.nn.Dropout(dropout),
-            torch.nn.Conv1d(c1, c2, k2, dilation=d0 * d1),
-            torch.nn.BatchNorm1d(c2, momentum=momentum),
-            torch.nn.GELU(),
-            torch.nn.Dropout(dropout),
-            torch.nn.Conv1d(c2, c3, k3, dilation=d0 * d1 * d2),
-            torch.nn.BatchNorm1d(c3, momentum=momentum),
-            torch.nn.GELU(),
-            torch.nn.Dropout(dropout),
-            torch.nn.Conv1d(c3, out_dim, 1, dilation=1),
-            torch.nn.Flatten(),  # no padding at end
-        )
-        self.linear_layer = torch.nn.Sequential(
-            torch.nn.LazyLinear(3),
-            # torch.nn.GELU(),
-            # torch.nn.Linear(50, 3),
-        )
-
-    def forward(self, x: torch.Tensor):
-        x = x.detach().clone()
-        x = x[:, 1:, :]
-        x[:, 3:6, :] /= 9.80665
-        x = self.conv_layer(x)
-        x = self.linear_layer(x)
-        return x
+        x = x.clone()
+        imu = x[:, 1:, :]
+        x1 = self.calibrate(imu)
+        x2 = self.conv_layer(self.norm(x1))
+        x2 = torch.mean(x2, dim=2)
+        return self._output_std_dev*x2
 
 
 class RmiModel(BaseNet):
@@ -237,17 +143,17 @@ class RmiModel(BaseNet):
     pytorch "neural network" just for easy hot-swapping and comparison.
     """
 
-    def __init__(self, window_size=200):
+    def __init__(self, output_window=200):
         super(RmiModel, self).__init__()
         self.calib_mat = torch.nn.Parameter(0.01 * torch.randn((6, 6)))
-        self.bias = torch.nn.Parameter(0.01*torch.randn((6,1)))
+        self.bias = torch.nn.Parameter(0.01 * torch.randn((6, 1)))
+        self._ow = output_window
 
     def forward(self, x):
+        x = x[:,:,-self._ow:]
         t = x[:, 0, :].unsqueeze(1)
-        x1 = x[:, 1:, :]
-        # x = self.norm(x)
-        M = (self.I + self.calib_mat).expand((x1.shape[0], 6, 6))
-        x1 = torch.matmul(M, x1) + self.bias
+        imu = x[:, 1:, :]
+        x1 = self.calibrate(imu)
         return get_rmi_batch(torch.concat((t, x1), dim=1))
 
 

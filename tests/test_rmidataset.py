@@ -13,13 +13,13 @@ import torch
 def test_length():
     dataset = RmiDataset("./data/processed/v1_01_easy.csv", window_size=1, stride=1)
     x = len(dataset)
-    assert x == 29120
+    assert x == 28712
 
 
 def test_length2():
     dataset = RmiDataset("./data/processed/v1_01_easy.csv", window_size=2, stride=1)
     x = len(dataset)
-    assert x == 29119
+    assert x == 28711
 
 
 def test_window_size():
@@ -81,4 +81,4 @@ def test_get_time():
 
 
 if __name__ == "__main__":
-    test_get_time()
+    test_full()

@@ -1,11 +1,12 @@
 from math import sqrt
 from model import (
     get_gt_rmis,
+    get_rmi_batch,
     get_rmis,
 )
-from train import valid_loop
+from training import valid_loop
 from utils import unflatten_pose, flatten_pose
-from losses import DeltaTransRmiLoss, delta_trans_rmi_loss, pose_loss
+from losses import  pose_loss
 import torch
 from torch.utils.data import DataLoader
 from pylie.torch import SO3
@@ -323,5 +324,51 @@ def trans_net_violin(net, filename):
             torch.Tensor(r_meas_rmse),
             torch.Tensor(v_rmse),
             torch.Tensor(v_meas_rmse),
+        ]
+    )
+
+
+def rmi_estimator_test(net, filename, window_size):
+    dataset = RmiDataset(
+        filename, window_size=window_size, stride=100, with_model=False, use_cache=False
+    )
+    loader = DataLoader(dataset, batch_size=len(dataset))
+    net.to("cpu")
+    net.eval()
+    r_rmse = []
+    v_rmse = []
+    C_rmse = []
+    r_meas_rmse = []
+    v_meas_rmse = []
+    C_meas_rmse = []
+    with torch.no_grad():
+    
+        x, y = next(iter(loader))
+
+        y_hat = net(x)
+        y_test = get_rmi_batch(x)
+
+        for i in range(y_hat.shape[0]):
+            y_hat_sample = y_hat[i,:].unsqueeze(0)
+            y_test_sample = y_test[i,:].unsqueeze(0)
+            y_sample = y[i,:].unsqueeze(0)
+            loss, info = pose_loss(y_hat_sample, y_sample, with_info=True)
+            r_rmse.append(sqrt(info["r_se"] / 3))
+            v_rmse.append(sqrt(info["v_se"] / 3))
+            C_rmse.append(sqrt(info["C_se"] / 3))
+
+            loss, info = pose_loss(y_test_sample, y_sample, with_info=True)
+            r_meas_rmse.append(sqrt(info["r_se"] / 3))
+            v_meas_rmse.append(sqrt(info["v_se"] / 3))
+            C_meas_rmse.append(sqrt(info["C_se"] / 3))
+
+    return torch.vstack(
+        [
+            torch.Tensor(r_rmse),
+            torch.Tensor(r_meas_rmse),
+            torch.Tensor(v_rmse),
+            torch.Tensor(v_meas_rmse),
+            torch.Tensor(C_rmse),
+            torch.Tensor(C_meas_rmse),
         ]
     )
