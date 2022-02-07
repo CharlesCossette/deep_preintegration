@@ -16,7 +16,7 @@ stride = 50
 batch_size = 256
 epochs = 2000
 load_file = None
-#load_file = "rminet2.pt"
+load_file = "rminet2.pt"
 calib_file = "./results/best_calibration_saved.pt"
 lr = 0.01
 weight_decay = 0
@@ -76,46 +76,51 @@ loss_fn = VelocityLoss()
 output_file = "rminet2.pt"
 
 
-# net_eval = RmiNet2(output_std_dev=y_std_dev[3:6])
-# net_eval.set_calibration(calib_results["calib_mat"], calib_results["bias"], False)
-# net_eval.load_state_dict(torch.load("./results/best_rminet2.pt" , map_location="cpu"))
-# net_eval.eval()
-# y_hat = net_eval(x).detach().numpy()
-# yv_hat = net_eval(xv).detach().numpy()
+net_eval = RmiNet2(output_std_dev=y_std_dev[3:6])
+net_eval.set_calibration(calib_results["calib_mat"], calib_results["bias"], False)
+net_eval.load_state_dict(torch.load("./results/best_rminet2.pt" , map_location="cpu"))
+net_eval.eval()
+y_hat = net_eval(x).detach().numpy()
+yv_hat = net_eval(xv).detach().numpy()
 
 
-# fig, axs = plt.subplots(3,1)
-# axs[0].plot(y[:,3])
-# axs[0].plot(y_hat[:,0])
-# axs[1].plot(y[:,4])
-# axs[1].plot(y_hat[:,1])
-# axs[2].plot(y[:,5])
-# axs[2].plot(y_hat[:,2])
+fig, axs = plt.subplots(3,1)
+axs[0].plot(y[:,3],label="Model Error")
+axs[0].plot(y_hat[:,0],label="NN")
+axs[1].plot(y[:,4])
+axs[1].plot(y_hat[:,1])
+axs[2].plot(y[:,5])
+axs[2].plot(y_hat[:,2])
+axs[0].legend()
+axs[0].set_title("Velocity Training Error")
+axs[2].set_xlabel("Sample Number")
+
+fig, axs = plt.subplots(3,1)
+axs[0].plot(yv[:,3],label="Model Error")
+axs[0].plot(yv_hat[:,0],label="NN")
+axs[1].plot(yv[:,4])
+axs[1].plot(yv_hat[:,1])
+axs[2].plot(yv[:,5])
+axs[2].plot(yv_hat[:,2])
+axs[0].legend()
+axs[0].set_title("Velocity Validation Error")
+axs[2].set_xlabel("Sample Number")
+plt.show()
 
 
-# fig, axs = plt.subplots(3,1)
-# axs[0].plot(yv[:,3])
-# axs[0].plot(yv_hat[:,0])
-# axs[1].plot(yv[:,4])
-# axs[1].plot(yv_hat[:,1])
-# axs[2].plot(yv[:,5])
-# axs[2].plot(yv_hat[:,2])
-# plt.show()
-
-
-train(
-    net,
-    trainset=delta_trainset,
-    batch_size=batch_size,
-    epochs=epochs,
-    validset=delta_validset,
-    output_file=output_file,
-    weights_file=load_file,
-    lr=lr,
-    loss_fn=loss_fn,
-    use_gpu=use_gpu,
-    weight_decay=weight_decay
-)
-# print(" ANALYTICAL MODEL LOSS: " + str(model_loss))
+# train(
+#     net,
+#     trainset=delta_trainset,
+#     batch_size=batch_size,
+#     epochs=epochs,
+#     validset=delta_validset,
+#     output_file=output_file,
+#     weights_file=load_file,
+#     lr=lr,
+#     loss_fn=loss_fn,
+#     use_gpu=use_gpu,
+#     weight_decay=weight_decay
+# )
+# # print(" ANALYTICAL MODEL LOSS: " + str(model_loss))
 
 print("done")

@@ -103,7 +103,7 @@ class RmiNet2(BaseNet):
     estimate.
     """
 
-    def __init__(self, window_size=200, output_std_dev =  torch.Tensor([1])):
+    def __init__(self, window_size=200, output_std_dev =  torch.Tensor([1,1,1])):
         self._window_size = window_size
         super(RmiNet2, self).__init__()
 

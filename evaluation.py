@@ -328,9 +328,9 @@ def trans_net_violin(net, filename):
     )
 
 
-def rmi_estimator_test(net, filename, window_size):
+def rmi_estimator_test(net, filename, window_size, output_window =400):
     dataset = RmiDataset(
-        filename, window_size=window_size, stride=100, with_model=False, use_cache=False
+        filename, window_size=window_size, stride=100, with_model=False, use_cache=False, output_window=output_window
     )
     loader = DataLoader(dataset, batch_size=len(dataset))
     net.to("cpu")
