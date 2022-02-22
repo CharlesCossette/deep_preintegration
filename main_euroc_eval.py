@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from utils import load_processed_data, bmtm
 import seaborn as sns
 import torch
+from typing import List
 from evaluation import (
     rmi_estimator_test,
     seperated_nets_test,
@@ -15,6 +16,8 @@ from pylie.torch import SO3
 import numpy as np
 
 sns.set_theme(context="paper")
+def annotate_subplots(axs: List[plt.Axes]) -> List[plt.Axes]:
+    return axs 
 
 N = 1000  # window size
 # torch.set_default_dtype(torch.float64)
@@ -91,27 +94,28 @@ net_bias = RmiModel(N)
 net_bias.set_calibration(torch.zeros((6,6)), -torch.Tensor([-0.002229,0.0207,0.07635,-0.012492,0.547666,0.069073]))
 data_bias = rmi_estimator_test(net_bias, test_file, N)
 
-net2 = RmiNet2(N)
-net2.load_state_dict(torch.load("./results/best_rminet2.pt", map_location="cpu"))
-data_net = rmi_estimator_test(net2, test_file, N)
+# net2 = RmiNet2(N)
+# net2.load_state_dict(torch.load("./results/best_rminet2.pt", map_location="cpu"))
+# data_net = rmi_estimator_test(net2, test_file, N)
 
-#%%
-fig, ax = plt.subplots(1, 3)
-temp = torch.vstack((data[0:2,:], data_net[0,:],data[2:4,:], data_net[2,:],data[4:6,:], data_net[4,:],))
-ax[0] = sns.violinplot(data=data[0:3, :].T, ax=ax[0], cut=0)
-ax[0].set_xticklabels(["Calibrated", "Raw"])
-ax[0].set_title("Position RMSE [m]")
-ax[1] = sns.violinplot(data=data[3:6, :].T, ax=ax[1], cut=0)
-ax[1].set_xticklabels(["Calibrated", "Raw"])
-ax[1].set_title("Velocity RMSE [m/s]")
-ax[2] = sns.violinplot(data=data[6:9, :].T, ax=ax[2], cut=0)
-ax[2].set_xticklabels(["Calibrated", "Raw"])
-ax[2].set_title("Attitude RMSE [rad]")
+# #%%
+# fig, ax = plt.subplots(1, 3)
+# temp = torch.vstack((data[0:2,:], data_net[0,:],data[2:4,:], data_net[2,:],data[4:6,:], data_net[4,:],))
+# ax[0] = sns.violinplot(data=data[0:3, :].T, ax=ax[0], cut=0)
+# ax[0].set_xticklabels(["Calibrated", "Raw"])
+# ax[0].set_title("Position RMSE [m]")
+# ax[1] = sns.violinplot(data=data[3:6, :].T, ax=ax[1], cut=0)
+# ax[1].set_xticklabels(["Calibrated", "Raw"])
+# ax[1].set_title("Velocity RMSE [m/s]")
+# ax[2] = sns.violinplot(data=data[6:9, :].T, ax=ax[2], cut=0)
+# ax[2].set_xticklabels(["Calibrated", "Raw"])
+# ax[2].set_title("Attitude RMSE [rad]")
 
 temp = data.clone()
 temp[[1, 3, 5], :] = data_bias[[0, 2, 4], :]
 
 fig, ax = plt.subplots(1, 3)
+ax = annotate_subplots(ax)
 ax[0] = sns.violinplot(data=temp[0:2, :].T, ax=ax[0], cut=0)
 ax[0].set_xticklabels(["Calibrated", "Bias Removed"])
 ax[0].set_title("Position RMSE [m]")
@@ -125,6 +129,7 @@ ax[2].set_title("Attitude RMSE [rad]")
 
 # #%%
 fig, ax = plt.subplots(3, 1)
+ax = annotate_subplots(ax)
 ax[0].plot(data[0, :].T, label="Calibrated")
 ax[0].plot(data[1, :].T, label="Raw")
 ax[0].set_ylabel("Pos. [m]")
@@ -138,7 +143,8 @@ ax[2].set_ylabel("Att. [rad]")
 ax[0].legend()
 fig.suptitle("RMSE throughout test dataset")
 
-fig, ax = plt.subplots(3, 1)
+fig, ax = plt.subplots(3, 1, sharex=True)
+ax = annotate_subplots(ax)
 ax[0].plot(temp[0, :].T, label="Calibrated")
 ax[0].plot(temp[1, :].T, label="Bias Removed")
 ax[0].set_ylabel("Pos. [m]")
@@ -161,6 +167,7 @@ fig.suptitle("RMSE throughout test dataset")
 # ax[2].plot(data[4, :].T)
 # ax[2].plot(data[5, :].T)
 # ax[0].legend()
+plt.tight_layout()
 plt.show()
 
 # %%

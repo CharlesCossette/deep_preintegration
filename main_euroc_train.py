@@ -16,7 +16,7 @@ stride = 50
 batch_size = 256
 epochs = 2000
 load_file = None
-load_file = "rminet2.pt"
+#load_file = "rminet2.pt"
 calib_file = "./results/best_calibration_saved.pt"
 lr = 0.01
 weight_decay = 0
@@ -108,19 +108,19 @@ axs[2].set_xlabel("Sample Number")
 plt.show()
 
 
-# train(
-#     net,
-#     trainset=delta_trainset,
-#     batch_size=batch_size,
-#     epochs=epochs,
-#     validset=delta_validset,
-#     output_file=output_file,
-#     weights_file=load_file,
-#     lr=lr,
-#     loss_fn=loss_fn,
-#     use_gpu=use_gpu,
-#     weight_decay=weight_decay
-# )
+train(
+    net,
+    trainset=delta_trainset,
+    batch_size=batch_size,
+    epochs=epochs,
+    validset=delta_validset,
+    output_file=output_file,
+    weights_file=load_file,
+    lr=lr,
+    loss_fn=loss_fn,
+    use_gpu=use_gpu,
+    weight_decay=weight_decay
+)
 # # print(" ANALYTICAL MODEL LOSS: " + str(model_loss))
 
 print("done")

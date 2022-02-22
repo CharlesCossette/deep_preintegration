@@ -111,18 +111,15 @@ class RmiNet2(BaseNet):
             torch.nn.Conv1d(6,12,7,1, padding= "same", padding_mode="replicate"),
             torch.nn.GELU(),
             torch.nn.Dropout(0.25),
-            torch.nn.Conv1d(12,18,7,1,dilation=4,padding= "same",  padding_mode="replicate"),
+            torch.nn.Conv1d(12,24,7,1,dilation=4,padding= "same",  padding_mode="replicate"),
             torch.nn.GELU(),
             torch.nn.Dropout(0.25),
-            torch.nn.Conv1d(18,24,7,1,dilation=16,padding= "same",  padding_mode="replicate"),
+            torch.nn.Conv1d(24,3,7,1,dilation=16,padding= "same",  padding_mode="replicate"),
             torch.nn.GELU(),
-            torch.nn.Dropout(0.2),
-            torch.nn.Conv1d(24,3,7,1,dilation=32,padding= "same",  padding_mode="replicate"),
-            torch.nn.Dropout(0.2)
         )
         # self.linear_layer = torch.nn.Sequential(
         #     torch.nn.LazyLinear(10),
-        #     torch.nn.GELU(),
+        #     torch.nn.GELU(), 
         #     torch.nn.Dropout(0.1),
         #     torch.nn.Linear(10, 3),
         # )
